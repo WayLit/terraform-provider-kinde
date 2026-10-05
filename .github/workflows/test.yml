@@ -6,7 +6,10 @@ name: Tests
 on:
   # No paths-ignore here: Build and generate are required checks, so every PR must run them.
   pull_request:
+  # PR branches are covered by pull_request; a second push run would report duplicate required checks.
   push:
+    branches:
+      - main
     paths-ignore:
       - 'README.md'
 
