@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Weekly grouped update PRs. Non-major PRs use GitHub auto-merge, so they merge once required checks pass; the rest wait for review.",
-  "extends": ["config:best-practices"],
+  "extends": ["config:best-practices", "customManagers:githubActionsVersions"],
   "forkProcessing": "enabled",
   "schedule": ["* * * * 1"],
   "minimumReleaseAge": "3 days",
@@ -43,8 +43,7 @@
       "groupName": "GitHub Actions"
     },
     {
-      "description": "golangci-lint separately: new releases add checks that can fail CI, which shouldn't block other action updates",
-      "matchManagers": ["github-actions"],
+      "description": "golangci-lint separately (set via GOLANGCI_LINT_VERSION in test.yml): new releases add checks that can fail CI",
       "matchPackageNames": ["golangci/golangci-lint"],
       "groupName": "golangci-lint"
     }
