@@ -28,13 +28,13 @@ type ConnectionResource struct {
 	client *connections.Client
 }
 
-// ConnectionOptionsModel represents OAuth2 connection options
+// ConnectionOptionsModel represents OAuth2 connection options.
 type ConnectionOptionsModel struct {
 	ClientID     types.String `tfsdk:"client_id" json:"client_id,omitempty"`
 	ClientSecret types.String `tfsdk:"client_secret" json:"client_secret,omitempty"`
 }
 
-// IsEmpty returns true if both fields are null or empty
+// IsEmpty returns true if both fields are null or empty.
 func (m *ConnectionOptionsModel) IsEmpty() bool {
 	if m == nil {
 		return true
@@ -45,7 +45,7 @@ func (m *ConnectionOptionsModel) IsEmpty() bool {
 	return isClientIDEmpty && isClientSecretEmpty
 }
 
-// Validate ensures both fields are either both set or both null
+// Validate ensures both fields are either both set or both null.
 func (m *ConnectionOptionsModel) Validate() error {
 	if m == nil {
 		return nil
@@ -60,7 +60,7 @@ func (m *ConnectionOptionsModel) Validate() error {
 	return nil
 }
 
-// ToAPIOptions converts the model to API options
+// ToAPIOptions converts the model to API options.
 func (m *ConnectionOptionsModel) ToAPIOptions() connections.SocialConnectionOptions {
 	if m == nil {
 		return connections.SocialConnectionOptions{}
@@ -76,7 +76,7 @@ func (m *ConnectionOptionsModel) ToAPIOptions() connections.SocialConnectionOpti
 	return opts
 }
 
-// ConnectionResourceModel represents the resource model
+// ConnectionResourceModel represents the resource model.
 type ConnectionResourceModel struct {
 	ID          types.String            `tfsdk:"id"`
 	Name        types.String            `tfsdk:"name"`
@@ -85,7 +85,7 @@ type ConnectionResourceModel struct {
 	Options     *ConnectionOptionsModel `tfsdk:"options"`
 }
 
-// Equal compares two ConnectionResourceModel instances
+// Equal compares two ConnectionResourceModel instances.
 func (m *ConnectionResourceModel) Equal(other *ConnectionResourceModel) bool {
 	if m == nil && other == nil {
 		return true
@@ -124,13 +124,7 @@ func (m *ConnectionResourceModel) Equal(other *ConnectionResourceModel) bool {
 	return clientIDEqual && clientSecretEqual
 }
 
-// Local structs for connection options with proper tfsdk tags
-type connectionOptions struct {
-	ClientID     types.String `tfsdk:"client_id"`
-	ClientSecret types.String `tfsdk:"client_secret"`
-}
-
-// Plan modifier for options
+// Plan modifier for options.
 type optionsEmptyPreserveModifier struct{}
 
 func (m optionsEmptyPreserveModifier) Description(ctx context.Context) string {

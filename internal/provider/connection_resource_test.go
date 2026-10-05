@@ -345,32 +345,6 @@ resource "kinde_connection" "sensitive" {
 `, name)
 }
 
-func testAccConnectionResourceConfig_OnlyClientID(name, clientID string) string {
-	return fmt.Sprintf(`
-resource "kinde_connection" "sensitive" {
-	name         = %[1]q
-	display_name = "Test Sensitive Fields"
-	strategy     = "oauth2:google"
-	options = {
-		client_id = %[2]q
-	}
-}
-`, name, clientID)
-}
-
-func testAccConnectionResourceConfig_OnlyClientSecret(name, clientSecret string) string {
-	return fmt.Sprintf(`
-resource "kinde_connection" "sensitive" {
-	name         = %[1]q
-	display_name = "Test Sensitive Fields"
-	strategy     = "oauth2:google"
-	options = {
-		client_secret = %[2]q
-	}
-}
-`, name, clientSecret)
-}
-
 func testAccConnectionResourceConfig_EmptyOptions(name string) string {
 	return fmt.Sprintf(`
 resource "kinde_connection" "empty_to_populated" {

@@ -157,7 +157,7 @@ func (r *RoleResource) Create(ctx context.Context, req resource.CreateRequest, r
 	resp.Diagnostics.Append(diags...)
 }
 
-// Helper function to sort permissions without modifying original
+// Helper function to sort permissions without modifying original.
 func sortPermissions(permissions []string) []string {
 	sorted := make([]string, len(permissions))
 	copy(sorted, permissions)
