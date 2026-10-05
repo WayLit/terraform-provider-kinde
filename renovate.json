@@ -1,0 +1,52 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Weekly grouped update PRs. Non-major PRs use GitHub auto-merge, so they merge once required checks pass; the rest wait for review.",
+  "extends": ["config:best-practices"],
+  "forkProcessing": "enabled",
+  "schedule": ["* * * * 1"],
+  "minimumReleaseAge": "3 days",
+  "automergeStrategy": "squash",
+  "labels": ["dependencies"],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes skip the schedule; group them because golang.org/x/* fixes bump each other",
+    "groupName": "security fixes",
+    "labels": ["dependencies", "security"]
+  },
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "packageRules": [
+    {
+      "description": "Auto-merge every PR except major updates once required checks pass",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Go modules (root and tools/) in one weekly update; majors get their own grouped PR",
+      "matchManagers": ["gomod"],
+      "groupName": "Go modules"
+    },
+    {
+      "description": "Go toolchain separately, so a failing upgrade doesn't hold back module updates",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["toolchain"],
+      "groupName": "Go toolchain"
+    },
+    {
+      "description": "kinde-go drives provider behaviour and CI doesn't run acceptance tests, so review its updates by hand",
+      "matchPackageNames": ["github.com/nxt-fwd/kinde-go"],
+      "groupName": "kinde-go",
+      "automerge": false
+    },
+    {
+      "description": "GitHub Actions and the tools they install in one weekly update; majors get their own grouped PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "golangci-lint separately: new releases add checks that can fail CI, which shouldn't block other action updates",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["golangci/golangci-lint"],
+      "groupName": "golangci-lint"
+    }
+  ]
+}
