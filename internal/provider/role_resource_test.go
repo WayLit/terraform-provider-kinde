@@ -137,59 +137,29 @@ resource "kinde_role" "test" {
 `, name)
 }
 
-func testAccRoleResourceConfig_WithPermissions(name, key, description string, permissions []string) string {
-	if len(permissions) == 0 {
-		return fmt.Sprintf(`
-resource "kinde_role" "test" {
-	name        = %q
-	key         = %q
-	description = %q
-}
-`, name, key, description)
-	}
-
-	permissionsStr := "["
-	for i, p := range permissions {
-		if i > 0 {
-			permissionsStr += ", "
-		}
-		permissionsStr += fmt.Sprintf(`"%s"`, p)
-	}
-	permissionsStr += "]"
-
-	return fmt.Sprintf(`
-resource "kinde_role" "test" {
-	name        = %q
-	key         = %q
-	description = %q
-	permissions = %s
-}
-`, name, key, description, permissionsStr)
-}
-
 func testAccRoleResourceConfigWithPermissionRefs(name string, permissionCount int, rolePermissionIndexes []int) string {
 	var builder strings.Builder
 
 	for i := 0; i < permissionCount; i++ {
-		builder.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&builder, `
 resource "kinde_permission" "perm_%02d" {
 	name        = "%s-permission-%02d"
 	key         = "%s_permission_%02d"
 	description = "Test permission %02d"
 }
-`, i, name, i, name, i, i))
+`, i, name, i, name, i, i)
 	}
 
-	builder.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(&builder, `
 resource "kinde_role" "test" {
 	name        = "%[1]s-role"
 	key         = "%[1]s_role"
 	description = "Test role"
 	permissions = [
-`, name))
+`, name)
 
 	for _, idx := range rolePermissionIndexes {
-		builder.WriteString(fmt.Sprintf("\t\tkinde_permission.perm_%02d.id,\n", idx))
+		fmt.Fprintf(&builder, "\t\tkinde_permission.perm_%02d.id,\n", idx)
 	}
 
 	builder.WriteString(`	]

@@ -4,10 +4,12 @@ name: Tests
 # This GitHub action runs your tests for each pull request and push.
 # Optionally, you can turn it on using a schedule for regular testing.
 on:
+  # No paths-ignore here: Build and generate are required checks, so every PR must run them.
   pull_request:
-    paths-ignore:
-      - 'README.md'
+  # PR branches are covered by pull_request; a second push run would report duplicate required checks.
   push:
+    branches:
+      - main
     paths-ignore:
       - 'README.md'
 
@@ -20,7 +22,8 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Building golangci-lint from source takes a few minutes on a cold cache.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
@@ -29,10 +32,17 @@ jobs:
           cache: true
       - run: go mod download
       - run: go build -v .
+      # Acceptance tests skip themselves without TF_ACC, so this runs only the unit tests.
+      - run: go test ./...
+      # The enterprise Actions allowlist blocks golangci/golangci-lint-action, so install the
+      # pinned release with go install (verified against the Go checksum database) instead.
       - name: Run linters
-        uses: golangci/golangci-lint-action@aaa42aa0628b4ae2578232a66b541047968fac86 # v6.1.0
-        with:
-          version: latest
+        env:
+          # renovate: datasource=github-releases depName=golangci/golangci-lint
+          GOLANGCI_LINT_VERSION: v2.14.0
+        run: |
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
 
   generate:
     runs-on: ubuntu-latest

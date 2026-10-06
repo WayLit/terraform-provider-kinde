@@ -30,41 +30,6 @@ type OrganizationUserResource struct {
 	client *organizations.Client
 }
 
-// Add custom plan modifier for empty lists
-type emptyListModifier struct{}
-
-func (m emptyListModifier) Description(ctx context.Context) string {
-	return "Treats null and empty lists as equivalent."
-}
-
-func (m emptyListModifier) MarkdownDescription(ctx context.Context) string {
-	return "Treats null and empty lists as equivalent."
-}
-
-func (m emptyListModifier) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
-	// If the plan is null and the state has an empty list, keep the empty list
-	if req.PlanValue.IsNull() && !req.StateValue.IsNull() && len(req.StateValue.Elements()) == 0 {
-		emptyList, diags := types.ListValueFrom(ctx, types.StringType, []string{})
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		resp.PlanValue = emptyList
-		return
-	}
-
-	// If the plan is null and config has an empty list, use the empty list
-	if req.PlanValue.IsNull() && !req.ConfigValue.IsNull() && len(req.ConfigValue.Elements()) == 0 {
-		emptyList, diags := types.ListValueFrom(ctx, types.StringType, []string{})
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		resp.PlanValue = emptyList
-		return
-	}
-}
-
 func (r *OrganizationUserResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_organization_user"
 }

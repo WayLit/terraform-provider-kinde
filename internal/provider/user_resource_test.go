@@ -13,7 +13,7 @@ import (
 	"github.com/nxt-fwd/kinde-go/api/users"
 )
 
-// TestUserResource_FiltersOAuthIdentities is a simple unit test for the OAuth filtering logic
+// TestUserResource_FiltersOAuthIdentities is a simple unit test for the OAuth filtering logic.
 func TestUserResource_FiltersOAuthIdentities(t *testing.T) {
 	// Create test data with mixed identity types
 	identities := []users.Identity{
@@ -408,7 +408,7 @@ resource "kinde_user" "name_test" {
 `, email, firstName, lastName)
 }
 
-// TestUserResource_SortsIdentitiesConsistently tests that identities are sorted consistently
+// TestUserResource_SortsIdentitiesConsistently tests that identities are sorted consistently.
 func TestUserResource_SortsIdentitiesConsistently(t *testing.T) {
 	// Create test data with identities in different orders
 	identitiesOrder1 := []struct {
