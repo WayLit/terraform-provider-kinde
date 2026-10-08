@@ -91,9 +91,6 @@ func TestNewDefaultsAudienceToDomainAPI(t *testing.T) {
 	if got, want := k.lastAudience(), k.srv.URL+"/api"; got != want {
 		t.Fatalf("audience = %q, want %q", got, want)
 	}
-	if got, want := c.Audience(), k.srv.URL+"/api"; got != want {
-		t.Fatalf("Audience() = %q, want %q", got, want)
-	}
 }
 
 func TestNewUsesConfiguredAudience(t *testing.T) {

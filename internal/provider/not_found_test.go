@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -8,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
 	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindefake"
 )
@@ -95,5 +97,74 @@ func requireNoErrors(t *testing.T, diags diag.Diagnostics) {
 	t.Helper()
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+}
+
+// TestReadReportsFollowUpNotFound checks that a 404 from a call Read makes
+// after the object itself was found is reported as an error. Taking it to
+// mean the object is gone would drop it from state, and the next apply would
+// create a duplicate with new credentials.
+func TestReadReportsFollowUpNotFound(t *testing.T) {
+	createApplication := func(t *testing.T, c *kindeapi.Client) string {
+		t.Helper()
+		created, err := c.CreateApplication(t.Context(), &mgmt.CreateApplicationReq{Name: "Web", Type: mgmt.CreateApplicationReqTypeReg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created.Application.Value.ID.Value
+	}
+	createRole := func(t *testing.T, c *kindeapi.Client) string {
+		t.Helper()
+		created, err := c.CreateRole(t.Context(), mgmt.CreateRoleReq{
+			Name:        mgmt.NewOptString("Admin"),
+			Key:         mgmt.NewOptString("admin"),
+			Description: mgmt.NewOptString("Administrators"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created.Role.Value.ID.Value
+	}
+
+	tests := []struct {
+		name     string
+		resource func() resource.Resource
+		create   func(t *testing.T, c *kindeapi.Client) string
+		// failSuffix is the path suffix of the follow-up call that answers 404.
+		failSuffix string
+	}{
+		{"kinde_application logout URLs", NewApplicationResource, createApplication, "/auth_logout_urls"},
+		{"kinde_application callback URLs", NewApplicationResource, createApplication, "/auth_redirect_urls"},
+		{"kinde_role permissions", NewRoleResource, createRole, "/permissions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := kindefake.New(t)
+			client, err := kindeapi.New(kindeapi.Config{Domain: f.URL, Audience: f.Audience, ClientID: f.ClientID, ClientSecret: f.ClientSecret})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := tt.create(t, client)
+			f.FailRequests(tt.failSuffix, http.StatusNotFound, "ROUTE_NOT_FOUND")
+
+			r := tt.resource()
+			if rc, ok := r.(resource.ResourceWithConfigure); ok {
+				var cresp resource.ConfigureResponse
+				rc.Configure(t.Context(), resource.ConfigureRequest{ProviderData: &providerData{api: client}}, &cresp)
+				requireNoErrors(t, cresp.Diagnostics)
+			}
+			var sresp resource.SchemaResponse
+			r.Schema(t.Context(), resource.SchemaRequest{}, &sresp)
+
+			state := stateWithAttrs(t, sresp.Schema, map[string]string{"id": id})
+			resp := resource.ReadResponse{State: tfsdk.State{Schema: sresp.Schema, Raw: state.Raw.Copy()}}
+			r.Read(t.Context(), resource.ReadRequest{State: state}, &resp)
+			if resp.State.Raw.IsNull() {
+				t.Fatal("Read removed an object that still exists")
+			}
+			if !resp.Diagnostics.HasError() {
+				t.Fatal("expected Read to report the failed follow-up call")
+			}
+		})
 	}
 }

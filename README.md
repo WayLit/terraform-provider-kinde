@@ -5,7 +5,7 @@ This provider allows you to manage your [Kinde](https://kinde.com/) resources us
 ## Requirements
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.20
+- [Go](https://golang.org/doc/install) >= 1.26
 
 ## Authentication
 
@@ -13,10 +13,13 @@ The provider needs to be configured with the proper credentials before it can be
 
 ```sh
 export KINDE_DOMAIN="https://your-domain.kinde.com"
+# Optional: defaults to <KINDE_DOMAIN>/api
 export KINDE_AUDIENCE="https://your-domain.kinde.com/api"
 export KINDE_CLIENT_ID="your-client-id"
 export KINDE_CLIENT_SECRET="your-client-secret"
 ```
+
+The credentials belong to a Kinde machine-to-machine application. It needs the Management API scopes listed under [Required scopes](docs/index.md#required-scopes) for the resources you manage.
 
 ## Usage
 
@@ -77,11 +80,19 @@ The provider includes both unit tests and acceptance tests:
 # Run unit tests
 make test
 
-# Run acceptance tests (requires Kinde credentials)
+# Run acceptance tests against an in-memory fake Kinde (no credentials needed)
 make testacc
 ```
 
-**Note:** Acceptance tests create real resources in your Kinde account. While most resources are cleaned up at the end of a test run, it's recommended to run these tests in a development account.
+Acceptance tests need the `terraform` CLI on your `PATH`, or `TF_ACC_TERRAFORM_PATH` pointing at a `terraform` or `tofu` binary. They never contact a real Kinde business.
+
+### Documentation
+
+The registry docs in `docs/` are generated from the schemas, `examples/`, and `templates/`. After changing any of them, regenerate the docs; CI fails if the committed docs differ:
+
+```sh
+cd tools && go generate ./...
+```
 
 ### Contributing
 
