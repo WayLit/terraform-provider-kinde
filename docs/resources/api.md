@@ -23,4 +23,4 @@ APIs represent the resource server to authorise against. See [documentation](htt
 ### Read-Only
 
 - `id` (String) ID of the API
-- `is_management_api` (Boolean) Whether this API is a management API
+- `is_management_api` (Boolean) Whether this API is the Kinde management API
