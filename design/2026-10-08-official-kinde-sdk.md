@@ -224,10 +224,13 @@ spec and the live API disagree. That risk is accepted.
   - add `github.com/nyaruka/phonenumbers`, which the ported phone parsing
     uses;
   - raise the `go` directive to at least 1.24.4.
+- `README.md`: raise the Go requirement to match `go.mod`.
 - `renovate.json`: point the kinde-go rule at `github.com/kinde-oss/kinde-go`
   and keep `automerge: false`. Its 0.x releases can rename types, and the
   fake shares the SDK's spec, so CI cannot catch API changes.
-- Regenerate the registry docs with `go generate ./...`; CI checks the diff.
+- Regenerate the registry docs with `cd tools && go generate ./...`. The
+  generators live in the `tools` module, which `./...` at the repository root
+  skips, so CI's generate job must run from `tools` too; it checks the diff.
 
 ## Risks
 
