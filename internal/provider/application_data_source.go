@@ -9,8 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/applications"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var _ datasource.DataSource = &ApplicationDataSource{}
@@ -20,7 +19,7 @@ func NewApplicationDataSource() datasource.DataSource {
 }
 
 type ApplicationDataSource struct {
-	client *applications.Client
+	client *kindeapi.Client
 }
 
 func (d *ApplicationDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -40,7 +39,7 @@ func (d *ApplicationDataSource) Schema(ctx context.Context, req datasource.Schem
 				Computed:    true,
 			},
 			"type": schema.StringAttribute{
-				Description: "The type of the application (reg, spa, or m2m).",
+				Description: "The type of the application (reg, spa, m2m, or device).",
 				Computed:    true,
 			},
 			"client_id": schema.StringAttribute{
@@ -61,7 +60,7 @@ func (d *ApplicationDataSource) Configure(ctx context.Context, req datasource.Co
 	if pd == nil {
 		return
 	}
-	d.client = pd.legacy.Applications
+	d.client = pd.api
 }
 
 func (d *ApplicationDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
@@ -72,7 +71,7 @@ func (d *ApplicationDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 
-	app, err := d.client.Get(ctx, state.ID.ValueString())
+	app, err := d.client.GetApplication(ctx, state.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Application",
@@ -81,10 +80,11 @@ func (d *ApplicationDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 
-	state.Name = types.StringValue(app.Name)
-	state.Type = types.StringValue(string(app.Type))
-	state.ClientID = types.StringValue(app.ClientID)
-	state.ClientSecret = types.StringValue(app.ClientSecret)
+	a := app.Application.Value
+	state.Name = stringValue(a.Name)
+	state.Type = applicationTypeValue(a.Type)
+	state.ClientID = stringValue(a.ClientID)
+	state.ClientSecret = stringValue(a.ClientSecret)
 
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)

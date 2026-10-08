@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -10,7 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/applications"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -23,7 +25,7 @@ func NewApplicationConnectionResource() resource.Resource {
 }
 
 type ApplicationConnectionResource struct {
-	client *applications.Client
+	client *kindeapi.Client
 }
 
 type applicationConnectionResourceModel struct {
@@ -65,7 +67,7 @@ func (r *ApplicationConnectionResource) Configure(_ context.Context, req resourc
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Applications
+	r.client = pd.api
 }
 
 func (r *ApplicationConnectionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -101,8 +103,11 @@ func (r *ApplicationConnectionResource) Read(ctx context.Context, req resource.R
 		return
 	}
 
-	// Get application connections
-	connections, err := r.client.GetConnections(ctx, state.ApplicationID.ValueString())
+	connections, err := r.client.ListApplicationConnections(ctx, state.ApplicationID.ValueString())
+	if kindeapi.IsNotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Application Connections",
@@ -111,16 +116,11 @@ func (r *ApplicationConnectionResource) Read(ctx context.Context, req resource.R
 		return
 	}
 
-	// Check if our connection is still enabled
-	found := false
-	for _, conn := range connections {
-		if conn.ID == state.ConnectionID.ValueString() {
-			found = true
-			break
-		}
-	}
-
-	if !found {
+	// The connection may have been disabled outside Terraform.
+	enabled := slices.ContainsFunc(connections, func(c mgmt.ConnectionConnection) bool {
+		return c.ID.Value == state.ConnectionID.ValueString()
+	})
+	if !enabled {
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -150,8 +150,8 @@ func (r *ApplicationConnectionResource) Delete(ctx context.Context, req resource
 		return
 	}
 
-	err := r.client.DisableConnection(ctx, state.ApplicationID.ValueString(), state.ConnectionID.ValueString())
-	if err != nil {
+	err := r.client.RemoveConnection(ctx, state.ApplicationID.ValueString(), state.ConnectionID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Disabling Connection",
 			fmt.Sprintf("Could not disable connection ID %s for application ID %s: %s", state.ConnectionID.ValueString(), state.ApplicationID.ValueString(), err),
