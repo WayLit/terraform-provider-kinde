@@ -14,7 +14,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/nxt-fwd/kinde-go"
 	"github.com/nxt-fwd/kinde-go/api/applications"
 )
 
@@ -106,28 +105,11 @@ func (r *ApplicationResource) Schema(ctx context.Context, req resource.SchemaReq
 }
 
 func (r *ApplicationResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	pd := providerDataFrom(req.ProviderData, &resp.Diagnostics)
+	if pd == nil {
 		return
 	}
-
-	client, ok := req.ProviderData.(*kinde.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *kinde.Client, got: %T. Please report this issue to the provider developers.", req.ProviderData),
-		)
-		return
-	}
-
-	if client.Applications == nil {
-		resp.Diagnostics.AddError(
-			"Unconfigured Applications Client",
-			"Expected configured applications client. Please report this issue to the provider developers.",
-		)
-		return
-	}
-
-	r.client = client.Applications
+	r.client = pd.legacy.Applications
 	tflog.Debug(ctx, "Application resource configured")
 }
 
