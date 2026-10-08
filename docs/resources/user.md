@@ -24,13 +24,12 @@ Manages a user within a Kinde organization.
 ### Optional
 
 - `is_suspended` (Boolean) Whether the user is suspended.
-- `organization_code` (String) The code of the organization the user belongs to.
+- `organization_code` (String) The code of an organization to add the user to when the user is created. Changing it later has no effect; use `kinde_organization_user` to manage memberships.
 
 ### Read-Only
 
-- `created_on` (String) The timestamp when the user was created.
+- `created_on` (String) When the user was created, as Kinde reports it (ISO 8601).
 - `id` (String) The unique identifier for the user.
-- `updated_on` (String) The timestamp when the user was last updated.
 
 <a id="nestedatt--identities"></a>
 ### Nested Schema for `identities`
@@ -38,4 +37,4 @@ Manages a user within a Kinde organization.
 Required:
 
 - `type` (String) The type of identity (email, username, phone, enterprise, social).
-- `value` (String) The value of the identity.
+- `value` (String) The value of the identity. Give phone numbers in international format, such as +61412345678.
