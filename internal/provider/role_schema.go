@@ -8,8 +8,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/roles"
-	"github.com/nxt-fwd/terraform-provider-kinde/internal/serde"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
 )
 
 type RoleResourceModel struct {
@@ -20,28 +19,21 @@ type RoleResourceModel struct {
 	Permissions types.Set    `tfsdk:"permissions"`
 }
 
-//nolint:unused
-func expandRoleResourceModel(data RoleResourceModel) roles.Role {
-	return roles.Role{
-		ID:          data.ID.ValueString(),
-		Name:        data.Name.ValueString(),
-		Key:         data.Key.ValueString(),
-		Description: data.Description.ValueString(),
+func expandRoleCreateReq(plan RoleResourceModel) mgmt.CreateRoleReq {
+	return mgmt.CreateRoleReq{
+		Name:        optString(plan.Name),
+		Key:         optString(plan.Key),
+		Description: optString(plan.Description),
 	}
 }
 
-func expandRoleCreateParams(plan RoleResourceModel) roles.CreateParams {
-	return roles.CreateParams{
+// expandRoleUpdateReq builds a role update. Kinde requires the name and key
+// on every update, which is also how a changed key is applied in place.
+func expandRoleUpdateReq(plan RoleResourceModel) mgmt.UpdateRolesReq {
+	return mgmt.UpdateRolesReq{
 		Name:        plan.Name.ValueString(),
 		Key:         plan.Key.ValueString(),
-		Description: plan.Description.ValueString(),
-	}
-}
-
-func expandRoleUpdateParams(plan RoleResourceModel) roles.UpdateParams {
-	return roles.UpdateParams{
-		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
+		Description: optString(plan.Description),
 	}
 }
 
@@ -61,51 +53,17 @@ func flattenRolePermissions(ctx context.Context, permissions []string, nullWhenE
 	return permissionsSet, nil
 }
 
-func flattenRoleResource(ctx context.Context, role *roles.Role, permissions []string, nullWhenEmpty bool) (RoleResourceModel, error) {
+func flattenRoleResource(ctx context.Context, role mgmt.GetRoleResponseRole, permissions []string, nullWhenEmpty bool) (RoleResourceModel, error) {
 	permissionsSet, err := flattenRolePermissions(ctx, permissions, nullWhenEmpty)
 	if err != nil {
 		return RoleResourceModel{}, err
 	}
 
 	return RoleResourceModel{
-		ID:          types.StringValue(role.ID),
-		Name:        types.StringValue(role.Name),
-		Key:         types.StringValue(role.Key),
-		Description: types.StringValue(role.Description),
+		ID:          stringValue(role.ID),
+		Name:        stringValue(role.Name),
+		Key:         stringValue(role.Key),
+		Description: stringValue(role.Description),
 		Permissions: permissionsSet,
-	}, nil
-}
-
-type RoleDataSourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Key         types.String `tfsdk:"key"`
-	Description types.String `tfsdk:"description"`
-	Permissions types.List   `tfsdk:"permissions"`
-}
-
-//nolint:unused
-func expandRoleDataSourceModel(model RoleDataSourceModel) *roles.Role {
-	return &roles.Role{
-		ID:          model.ID.ValueString(),
-		Name:        model.Name.ValueString(),
-		Key:         model.Key.ValueString(),
-		Description: model.Description.ValueString(),
-	}
-}
-
-//nolint:unused
-func flattenRoleDataSource(ctx context.Context, resource *roles.Role, permissions []string) (RoleDataSourceModel, error) {
-	permissionsList, diags := serde.FlattenStringList(ctx, permissions)
-	if diags.HasError() {
-		return RoleDataSourceModel{}, fmt.Errorf("failed to flatten permissions: %v", diags)
-	}
-
-	return RoleDataSourceModel{
-		ID:          types.StringValue(resource.ID),
-		Name:        types.StringValue(resource.Name),
-		Key:         types.StringValue(resource.Key),
-		Description: types.StringValue(resource.Description),
-		Permissions: permissionsList,
 	}, nil
 }

@@ -1,17 +1,14 @@
 package provider
 
 import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
+	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go"
-	"github.com/nxt-fwd/kinde-go/api/roles"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindefake"
 )
 
 func TestBuildRolePermissionOperations(t *testing.T) {
@@ -20,10 +17,10 @@ func TestBuildRolePermissionOperations(t *testing.T) {
 		[]string{"perm_b", "perm_d"},
 	)
 
-	want := []roles.UpdatePermissionItem{
-		{ID: "perm_a", Operation: "delete"},
-		{ID: "perm_c", Operation: "delete"},
-		{ID: "perm_d"},
+	want := []mgmt.UpdateRolePermissionsReqPermissionsItem{
+		{ID: mgmt.NewOptString("perm_a"), Operation: mgmt.NewOptString("delete")},
+		{ID: mgmt.NewOptString("perm_c"), Operation: mgmt.NewOptString("delete")},
+		{ID: mgmt.NewOptString("perm_d")},
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -42,7 +39,7 @@ func TestRolePermissionsMatchIgnoresOrdering(t *testing.T) {
 }
 
 func TestFlattenRolePermissionsPreservesNullAndEmpty(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	nullSet, err := flattenRolePermissions(ctx, nil, true)
 	if err != nil {
@@ -64,102 +61,92 @@ func TestFlattenRolePermissionsPreservesNullAndEmpty(t *testing.T) {
 	}
 }
 
+func TestExpandRoleUpdateReqSendsNameAndKey(t *testing.T) {
+	got := expandRoleUpdateReq(RoleResourceModel{
+		ID:          types.StringValue("rol_0001"),
+		Name:        types.StringValue("Admins"),
+		Key:         types.StringValue("admins"),
+		Description: types.StringValue("Administrators"),
+	})
+	want := mgmt.UpdateRolesReq{
+		Name:        "Admins",
+		Key:         "admins",
+		Description: mgmt.NewOptString("Administrators"),
+	}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
 func TestGetRoleUsesAllPermissionPages(t *testing.T) {
-	ctx := context.Background()
-	var permissionRequests []string
+	ctx := t.Context()
+	f := kindefake.New(t)
+	// With pages of 10, the eleventh permission is on the second page.
+	f.LimitPageSize(10)
+	client, err := kindeapi.New(kindeapi.Config{Domain: f.URL, Audience: f.Audience, ClientID: f.ClientID, ClientSecret: f.ClientSecret})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+	created, err := client.CreateRole(ctx, mgmt.CreateRoleReq{
+		Name:        mgmt.NewOptString("Role"),
+		Key:         mgmt.NewOptString("role"),
+		Description: mgmt.NewOptString("Role description"),
+	})
+	if err != nil {
+		t.Fatalf("create role: %s", err)
+	}
+	roleID := created.Role.Value.ID.Value
 
-		switch r.URL.Path {
-		case "/oauth2/token":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "test-token",
-				"expires_in":   3600,
-				"token_type":   "bearer",
-			})
-		case "/api/v1/roles/role_1":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"role": map[string]any{
-					"id":          "role_1",
-					"name":        "Role",
-					"key":         "role",
-					"description": "Role description",
-				},
-			})
-		case "/api/v1/roles/role_1/permissions":
-			permissionRequests = append(permissionRequests, r.URL.RawQuery)
-			if r.URL.Query().Get("next_token") == "" {
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"next_token": "page-2",
-					"permissions": []map[string]string{
-						{"id": "perm_01"},
-						{"id": "perm_02"},
-						{"id": "perm_03"},
-						{"id": "perm_04"},
-						{"id": "perm_05"},
-						{"id": "perm_06"},
-						{"id": "perm_07"},
-						{"id": "perm_08"},
-						{"id": "perm_09"},
-						{"id": "perm_10"},
-					},
-				})
-				return
-			}
-
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"permissions": []map[string]string{
-					{"id": "perm_11"},
-				},
-			})
-		default:
-			http.NotFound(w, r)
+	var items []mgmt.UpdateRolePermissionsReqPermissionsItem
+	for i := range 11 {
+		key := fmt.Sprintf("perm_%02d", i)
+		if err := client.CreatePermission(ctx, mgmt.CreatePermissionReq{Name: mgmt.NewOptString(key), Key: mgmt.NewOptString(key)}); err != nil {
+			t.Fatalf("create permission: %s", err)
 		}
-	}))
-	defer server.Close()
+	}
+	perms, err := client.ListPermissions(ctx)
+	if err != nil {
+		t.Fatalf("list permissions: %s", err)
+	}
+	for _, p := range perms {
+		items = append(items, mgmt.UpdateRolePermissionsReqPermissionsItem{ID: p.ID})
+	}
+	if err := client.UpdateRolePermissions(ctx, roleID, mgmt.UpdateRolePermissionsReq{Permissions: items}); err != nil {
+		t.Fatalf("add role permissions: %s", err)
+	}
 
-	client := kinde.New(ctx, kinde.NewClientOptions().
-		WithDomain(server.URL).
-		WithAudience("audience").
-		WithClientID("client-id").
-		WithClientSecret("client-secret"))
-
-	resource := RoleResource{client: client.Roles}
-	role, err := resource.getRole(ctx, "role_1")
+	r := RoleResource{client: client}
+	role, err := r.getRole(ctx, roleID)
 	if err != nil {
 		t.Fatalf("get role: %s", err)
 	}
-
-	if got := len(role.Permissions); got != 11 {
-		t.Fatalf("expected 11 permissions across pages, got %d: %#v", got, role.Permissions)
+	if got := len(role.permissionIDs); got != 11 {
+		t.Fatalf("expected 11 permissions across pages, got %d: %#v", got, role.permissionIDs)
 	}
-
-	if len(permissionRequests) != 2 {
-		t.Fatalf("expected 2 permission requests, got %d: %#v", len(permissionRequests), permissionRequests)
+	if got := role.details.Key.Value; got != "role" {
+		t.Fatalf("key = %q, want role", got)
 	}
+}
 
-	wantQueries := []url.Values{
-		{"page_size": []string{"10"}},
-		{"page_size": []string{"10"}, "next_token": []string{"page-2"}},
+func TestGetRoleReturnsNotFound(t *testing.T) {
+	f := kindefake.New(t)
+	client, err := kindeapi.New(kindeapi.Config{Domain: f.URL, Audience: f.Audience, ClientID: f.ClientID, ClientSecret: f.ClientSecret})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for i, wantQuery := range wantQueries {
-		gotQuery, err := url.ParseQuery(permissionRequests[i])
-		if err != nil {
-			t.Fatalf("parse permission request query %q: %s", permissionRequests[i], err)
-		}
-		if !reflect.DeepEqual(gotQuery, wantQuery) {
-			t.Fatalf("unexpected permission request query %d\nwant: %#v\n got: %#v", i, wantQuery, gotQuery)
-		}
+	r := RoleResource{client: client}
+	if _, err := r.getRole(t.Context(), "rol_missing"); !kindeapi.IsNotFound(err) {
+		t.Fatalf("expected a not-found error, got %v", err)
 	}
 }
 
 func TestFlattenRoleResourceUsesEmptySetForConfiguredEmpty(t *testing.T) {
-	state, err := flattenRoleResource(context.Background(), &roles.Role{
-		ID:          "role_1",
-		Name:        "Role",
-		Key:         "role",
-		Description: "Role description",
+	state, err := flattenRoleResource(t.Context(), mgmt.GetRoleResponseRole{
+		ID:          mgmt.NewOptString("role_1"),
+		Name:        mgmt.NewOptString("Role"),
+		Key:         mgmt.NewOptString("role"),
+		Description: mgmt.NewOptString("Role description"),
 	}, nil, false)
 	if err != nil {
 		t.Fatalf("flatten role: %s", err)
@@ -169,7 +156,7 @@ func TestFlattenRoleResourceUsesEmptySetForConfiguredEmpty(t *testing.T) {
 		t.Fatal("expected empty configured permissions to stay an empty set")
 	}
 
-	emptySet, diags := types.SetValueFrom(context.Background(), types.StringType, []string{})
+	emptySet, diags := types.SetValueFrom(t.Context(), types.StringType, []string{})
 	if diags.HasError() {
 		t.Fatalf("build empty set: %v", diags)
 	}
