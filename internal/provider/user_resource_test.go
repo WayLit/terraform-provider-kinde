@@ -1,88 +1,70 @@
 package provider
 
 import (
+	"cmp"
 	"fmt"
-	"math/rand"
 	"regexp"
-	"sort"
-	"strings"
+	"slices"
 	"testing"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
-	"github.com/nxt-fwd/kinde-go/api/users"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
-// TestUserResource_FiltersOAuthIdentities is a simple unit test for the OAuth filtering logic.
-func TestUserResource_FiltersOAuthIdentities(t *testing.T) {
-	// Create test data with mixed identity types
-	identities := []users.Identity{
-		{Type: "email", Name: "test@example.com"},
-		{Type: "username", Name: "testuser"},
-		{Type: "oauth2:google", Name: "test@gmail.com"},
-		{Type: "oauth2:github", Name: "githubuser"},
-		{Type: "phone", Name: "+1234567890"},
+func TestUserIdentitiesValue(t *testing.T) {
+	identities := []kindeapi.UserIdentity{
+		{ID: "identity_0001", Type: "email", Name: "test@example.com"},
+		{ID: "identity_0002", Type: "username", Name: "testuser"},
+		{ID: "identity_0003", Type: "oauth2:google", Name: "test@gmail.com"},
+		{ID: "identity_0004", Type: "oauth2:github", Name: "githubuser"},
+		{ID: "identity_0005", Type: "phone", Name: "+12025550123"},
 	}
-
-	// Create a test state with the identities
-	var tfIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
+	tests := []struct {
+		name       string
+		knownTypes map[string]string
+		want       []userIdentityModel
+	}{
+		{
+			name: "drops OAuth2 identities",
+			want: []userIdentityModel{
+				{Type: "email", Value: "test@example.com"},
+				{Type: "phone", Value: "+12025550123"},
+				{Type: "username", Value: "testuser"},
+			},
+		},
+		{
+			name:       "keeps known types",
+			knownTypes: map[string]string{"testuser": "enterprise"},
+			want: []userIdentityModel{
+				{Type: "email", Value: "test@example.com"},
+				{Type: "enterprise", Value: "testuser"},
+				{Type: "phone", Value: "+12025550123"},
+			},
+		},
 	}
-
-	// Filter out OAuth identities (simulating what our Read function does)
-	for _, identity := range identities {
-		if strings.HasPrefix(identity.Type, "oauth2:") {
-			continue
-		}
-
-		tfIdentities = append(tfIdentities, struct {
-			Type  string `tfsdk:"type"`
-			Value string `tfsdk:"value"`
-		}{
-			Type:  identity.Type,
-			Value: identity.Name,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			set, diags := userIdentitiesValue(t.Context(), identities, tt.knownTypes)
+			requireNoErrors(t, diags)
+			var got []userIdentityModel
+			requireNoErrors(t, set.ElementsAs(t.Context(), &got, false))
+			slices.SortFunc(got, func(a, b userIdentityModel) int {
+				return cmp.Or(cmp.Compare(a.Type, b.Type), cmp.Compare(a.Value, b.Value))
+			})
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
 		})
-	}
-
-	// Verify the filtering worked correctly
-	if len(tfIdentities) != 3 {
-		t.Errorf("Expected 3 non-OAuth identities, got %d", len(tfIdentities))
-	}
-
-	// Check that no OAuth identities remain
-	for _, identity := range tfIdentities {
-		if strings.HasPrefix(identity.Type, "oauth2:") {
-			t.Errorf("OAuth identity was not filtered out: %s", identity.Type)
-		}
-	}
-
-	// Verify the specific identity types that should remain
-	expectedTypes := map[string]bool{
-		"email":    false,
-		"username": false,
-		"phone":    false,
-	}
-
-	for _, identity := range tfIdentities {
-		expectedTypes[identity.Type] = true
-	}
-
-	for idType, found := range expectedTypes {
-		if !found {
-			t.Errorf("Expected identity type %s was not found after filtering", idType)
-		}
 	}
 }
 
 func TestAccUserResource_ComplexAttributes(t *testing.T) {
-	testID := rand.Int()
-	email := fmt.Sprintf("complex.user.tfacc-%d@example.com", testID)
-	altEmail := fmt.Sprintf("complex.user.alt.tfacc-%d@example.com", testID)
-	username := fmt.Sprintf("complex-user-%d", testID)
+	testAccFake(t)
+	email := "complex.user@example.com"
+	altEmail := "complex.user.alt@example.com"
+	username := "complex-user"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create a user with email and username identities, is_suspended=false
@@ -178,14 +160,12 @@ resource "kinde_user" "complex" {
 }
 
 func TestAccUserResource_PhoneIdentity(t *testing.T) {
-	testID := rand.Int()
-	email := fmt.Sprintf("phone.user.tfacc-%d@example.com", testID)
-	// Use a valid international phone number format
-	phone := fmt.Sprintf("+12025550%03d", testID%1000)
-	phone2 := fmt.Sprintf("+12025551%03d", testID%1000)
+	testAccFake(t)
+	email := "phone.user@example.com"
+	phone := "+12025550123"
+	phone2 := "+12025550124"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create a user with email and phone identities
@@ -206,7 +186,9 @@ func TestAccUserResource_PhoneIdentity(t *testing.T) {
 					}),
 				),
 			},
-			// Update to add another phone identity
+			// Add another phone identity. The adapter splits it into a national
+			// number and country, and Kinde reports it back in international
+			// format.
 			{
 				Config: testAccUserResourceConfig_WithMultiplePhones(email, phone, phone2),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -275,18 +257,19 @@ resource "kinde_user" "phone" {
 }
 
 func TestAccUserResource_OAuth2Identity(t *testing.T) {
-	testID := rand.Int()
-	email := fmt.Sprintf("oauth2.user.tfacc-%d@example.com", testID)
-	username := fmt.Sprintf("oauth2-user-%d", testID)
+	f := testAccFake(t)
+	email := "oauth2.user@example.com"
+	username := "oauth2-user"
+	var userID string
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create a user with email and username identities
 			{
 				Config: testAccUserResourceConfig_OAuth2(email, username),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("kinde_user.oauth2", "id", func(v string) error { userID = v; return nil }),
 					resource.TestCheckResourceAttr("kinde_user.oauth2", "first_name", "OAuth2"),
 					resource.TestCheckResourceAttr("kinde_user.oauth2", "last_name", "User"),
 					// We expect exactly 2 identities in the state (email and username)
@@ -302,9 +285,12 @@ func TestAccUserResource_OAuth2Identity(t *testing.T) {
 					}),
 				),
 			},
-			// Update user details while preserving identities
+			// The user signs in with Google, so Kinde adds an OAuth2 identity.
+			// Update user details: the OAuth2 identity stays out of state and
+			// causes no drift.
 			{
-				Config: testAccUserResourceConfig_OAuth2Updated(email, username),
+				PreConfig: func() { f.AddUserIdentity(userID, "oauth2:google", "oauth2.user@gmail.com") },
+				Config:    testAccUserResourceConfig_OAuth2Updated(email, username),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("kinde_user.oauth2", "first_name", "Updated"),
 					resource.TestCheckResourceAttr("kinde_user.oauth2", "last_name", "OAuth2"),
@@ -366,28 +352,50 @@ resource "kinde_user" "oauth2" {
 }
 
 func TestAccUserResource_NameHandling(t *testing.T) {
-	testID := rand.Int()
-	email := fmt.Sprintf("name.test.tfacc-%d@example.com", testID)
+	f := testAccFake(t)
+	email := "name.test@example.com"
+	config := testAccUserResourceConfig_Names(email, "Jane", "Smith")
+	var userID string
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create with both names set
 			{
 				Config: testAccUserResourceConfig_Names(email, "John", "Doe"),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("kinde_user.name_test", "id", func(v string) error { userID = v; return nil }),
 					resource.TestCheckResourceAttr("kinde_user.name_test", "first_name", "John"),
 					resource.TestCheckResourceAttr("kinde_user.name_test", "last_name", "Doe"),
+					// created_on is stored exactly as Kinde returns it.
+					resource.TestCheckResourceAttr("kinde_user.name_test", "created_on", "2026-01-01T00:00:00Z"),
 				),
+			},
+			// Import by ID
+			{
+				ResourceName:      "kinde_user.name_test",
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 			// Update with new values
 			{
-				Config: testAccUserResourceConfig_Names(email, "Jane", "Smith"),
+				Config: config,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("kinde_user.name_test", "first_name", "Jane"),
 					resource.TestCheckResourceAttr("kinde_user.name_test", "last_name", "Smith"),
 				),
+			},
+			// Deleted outside Terraform: refresh drops it and the plan recreates it.
+			{
+				PreConfig:          func() { f.RemoveUser(userID) },
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			// Applying recreates it.
+			{
+				Config: config,
+				Check:  resource.TestCheckResourceAttrSet("kinde_user.name_test", "id"),
 			},
 		},
 	})
@@ -408,68 +416,45 @@ resource "kinde_user" "name_test" {
 `, email, firstName, lastName)
 }
 
-// TestUserResource_SortsIdentitiesConsistently tests that identities are sorted consistently.
-func TestUserResource_SortsIdentitiesConsistently(t *testing.T) {
-	// Create test data with identities in different orders
-	identitiesOrder1 := []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}{
-		{Type: "email", Value: "test@example.com"},
-		{Type: "phone", Value: "+1234567890"},
-		{Type: "username", Value: "testuser"},
-	}
+func TestAccUserResource_OrganizationCode(t *testing.T) {
+	f := testAccFake(t)
 
-	identitiesOrder2 := []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}{
-		{Type: "phone", Value: "+1234567890"},
-		{Type: "username", Value: "testuser"},
-		{Type: "email", Value: "test@example.com"},
-	}
-
-	// Sort both sets of identities
-	sort.Slice(identitiesOrder1, func(i, j int) bool {
-		if identitiesOrder1[i].Type == identitiesOrder1[j].Type {
-			return identitiesOrder1[i].Value < identitiesOrder1[j].Value
-		}
-		return identitiesOrder1[i].Type < identitiesOrder1[j].Type
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "kinde_user" "org" {
+  first_name        = "Org"
+  last_name         = "Member"
+  organization_code = "org_engines"
+  identities = [
+    {
+      type  = "email"
+      value = "org.member@example.com"
+    }
+  ]
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("kinde_user.org", "organization_code", "org_engines"),
+					// The fake records organization_code without checking that
+					// the organization exists.
+					resource.TestCheckResourceAttrWith("kinde_user.org", "id", func(id string) error {
+						if got := f.UserOrganizationCode(id); got != "org_engines" {
+							return fmt.Errorf("Kinde got organization_code %q, want org_engines", got)
+						}
+						return nil
+					}),
+				),
+			},
+		},
 	})
-
-	sort.Slice(identitiesOrder2, func(i, j int) bool {
-		if identitiesOrder2[i].Type == identitiesOrder2[j].Type {
-			return identitiesOrder2[i].Value < identitiesOrder2[j].Value
-		}
-		return identitiesOrder2[i].Type < identitiesOrder2[j].Type
-	})
-
-	// Verify that both sets are now in the same order
-	if len(identitiesOrder1) != len(identitiesOrder2) {
-		t.Errorf("Sorted identity sets have different lengths: %d vs %d",
-			len(identitiesOrder1), len(identitiesOrder2))
-		return
-	}
-
-	for i := range identitiesOrder1 {
-		if identitiesOrder1[i].Type != identitiesOrder2[i].Type ||
-			identitiesOrder1[i].Value != identitiesOrder2[i].Value {
-			t.Errorf("Sorted identities differ at position %d: %+v vs %+v",
-				i, identitiesOrder1[i], identitiesOrder2[i])
-		}
-	}
-
-	// Verify the specific order (email should come before phone and username)
-	if len(identitiesOrder1) >= 3 {
-		if identitiesOrder1[0].Type != "email" {
-			t.Errorf("Expected 'email' to be first type after sorting, got: %s", identitiesOrder1[0].Type)
-		}
-	}
 }
 
 func TestUserResource_ErrorOnCreateWithIsSuspended(t *testing.T) {
+	testAccFake(t)
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -493,14 +478,13 @@ resource "kinde_user" "test" {
 }
 
 func TestAccUserResource_IsSuspendedBehavior(t *testing.T) {
-	// Generate random values for the test
-	email := fmt.Sprintf("test-suspended-%d-%d-%d-%d@example.com", time.Now().UnixNano(), rand.Intn(1000000), rand.Intn(1000000), rand.Intn(1000000))
+	testAccFake(t)
+	email := "test-suspended@example.com"
 	firstName := "John"
 	lastName := "Doe"
-	phone := fmt.Sprintf("+35845230%d", time.Now().UnixNano()%1000000)
+	phone := "+358452301234"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
