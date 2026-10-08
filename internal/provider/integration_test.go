@@ -12,10 +12,10 @@ import (
 )
 
 func TestAccIntegrationBasicWorkflow(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Step 1: Create all resources
@@ -173,10 +173,10 @@ resource "kinde_organization_user" "test" {
 }
 
 func TestAccIntegrationRoleManagement(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Step 1: Create role with multiple permissions
@@ -274,10 +274,10 @@ resource "kinde_role" "complex" {
 }
 
 func TestAccIntegrationUserOrganizations(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Step 1: Create user with multiple organization memberships
@@ -371,10 +371,10 @@ resource "kinde_organization_user" "second" {
 }
 
 func TestAccIntegrationApplicationWorkflow(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Step 1: Create application with minimal configuration
@@ -406,10 +406,10 @@ func TestAccIntegrationApplicationWorkflow(t *testing.T) {
 					resource.TestCheckResourceAttr("kinde_application.test", "login_uri", "https://example.com/login"),
 					resource.TestCheckResourceAttr("kinde_application.test", "homepage_uri", "https://example.com"),
 					resource.TestCheckResourceAttr("kinde_application.test", "logout_uris.#", "1"),
-					resource.TestCheckResourceAttr("kinde_application.test", "logout_uris.0", "https://example.com/logout"),
+					resource.TestCheckTypeSetElemAttr("kinde_application.test", "logout_uris.*", "https://example.com/logout"),
 					resource.TestCheckResourceAttr("kinde_application.test", "redirect_uris.#", "2"),
-					resource.TestCheckResourceAttr("kinde_application.test", "redirect_uris.0", "https://example.com/callback"),
-					resource.TestCheckResourceAttr("kinde_application.test", "redirect_uris.1", "https://example.com/callback2"),
+					resource.TestCheckTypeSetElemAttr("kinde_application.test", "redirect_uris.*", "https://example.com/callback"),
+					resource.TestCheckTypeSetElemAttr("kinde_application.test", "redirect_uris.*", "https://example.com/callback2"),
 				),
 			},
 		},
@@ -442,10 +442,10 @@ resource "kinde_application" "test" {
 }
 
 func TestAccIntegrationM2MApplicationWorkflow(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Step 1: Create M2M application

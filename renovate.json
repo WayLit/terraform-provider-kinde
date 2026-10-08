@@ -32,8 +32,8 @@
       "groupName": "Go toolchain"
     },
     {
-      "description": "kinde-go drives provider behaviour and CI doesn't run acceptance tests, so review its updates by hand",
-      "matchPackageNames": ["github.com/nxt-fwd/kinde-go"],
+      "description": "kinde-go is regenerated from Kinde's live spec, so 0.x releases can rename types, and the fake shares that spec, so CI can't catch API changes: review its updates by hand",
+      "matchPackageNames": ["github.com/kinde-oss/kinde-go"],
       "groupName": "kinde-go",
       "automerge": false
     },
