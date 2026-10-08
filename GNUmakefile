@@ -3,7 +3,7 @@ default: testacc
 # Run acceptance tests
 .PHONY: testacc
 testacc:
-	set -a && source .env && set +a && TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
+	TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
 
 # Run unit tests
 .PHONY: test
@@ -62,10 +62,5 @@ VERSION = $(shell git describe --tags --match 'v*' 2>/dev/null || echo "v0.0.0")
 coverage:
 	go test ./... -coverprofile=coverage.out
 	go tool cover -html=coverage.out
-
-# Note: Test resources are automatically cleaned up by the test framework
-# at the end of each test. However, if tests fail or are interrupted,
-# some resources might remain. These should be manually cleaned up in
-# your Kinde account.
 
 .PHONY: default build clean coverage docs docs-validate all

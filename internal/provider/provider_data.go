@@ -4,15 +4,12 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
-	"github.com/nxt-fwd/kinde-go"
 	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 // providerData is what Configure hands to every resource and data source.
 type providerData struct {
 	api *kindeapi.Client
-	// legacy serves resources that have not moved to api yet.
-	legacy *kinde.Client
 }
 
 // providerDataFrom extracts providerData in a resource or data source

@@ -13,6 +13,7 @@ The provider needs to be configured with the proper credentials before it can be
 
 ```sh
 export KINDE_DOMAIN="https://your-domain.kinde.com"
+# Optional: defaults to <KINDE_DOMAIN>/api
 export KINDE_AUDIENCE="https://your-domain.kinde.com/api"
 export KINDE_CLIENT_ID="your-client-id"
 export KINDE_CLIENT_SECRET="your-client-secret"
@@ -77,11 +78,11 @@ The provider includes both unit tests and acceptance tests:
 # Run unit tests
 make test
 
-# Run acceptance tests (requires Kinde credentials)
+# Run acceptance tests against an in-memory fake Kinde (no credentials needed)
 make testacc
 ```
 
-**Note:** Acceptance tests create real resources in your Kinde account. While most resources are cleaned up at the end of a test run, it's recommended to run these tests in a development account.
+Acceptance tests need the `terraform` CLI on your `PATH`, or `TF_ACC_TERRAFORM_PATH` pointing at a `terraform` or `tofu` binary. They never contact a real Kinde business.
 
 ### Contributing
 
