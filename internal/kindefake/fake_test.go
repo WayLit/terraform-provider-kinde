@@ -120,3 +120,35 @@ func TestTokenEndpointRejectsWrongSecret(t *testing.T) {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
 }
+
+func TestRawRoutesRejectWrongToken(t *testing.T) {
+	f := kindefake.New(t)
+	resp := get(t, f, "/api/v1/connections", "not-the-token")
+	if resp.StatusCode != http.StatusUnauthorized || errorCode(t, resp) != "UNAUTHORIZED" {
+		t.Fatalf("status = %d, want 401 UNAUTHORIZED", resp.StatusCode)
+	}
+}
+
+func TestConnectionsAreListedInLiveShape(t *testing.T) {
+	f := kindefake.New(t)
+	resp := get(t, f, "/api/v1/connections?page_size=2", fetchToken(t, f))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Connections []map[string]any `json:"connections"`
+		HasMore     bool             `json:"has_more"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	// The fake starts with 5 built-in connections.
+	if len(body.Connections) != 2 || !body.HasMore {
+		t.Fatalf("got %d connections, has_more %v; want 2 and true", len(body.Connections), body.HasMore)
+	}
+	for _, c := range body.Connections {
+		if _, wrapped := c["connection"]; wrapped || c["id"] == nil || c["strategy"] == nil {
+			t.Fatalf("item %v is not a plain connection object", c)
+		}
+	}
+}
