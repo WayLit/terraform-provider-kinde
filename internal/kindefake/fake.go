@@ -37,6 +37,7 @@ type Fake struct {
 	pageLimit     int
 
 	// Domain state.
+	users         map[string]*user
 	organizations map[string]*organization
 	applications  map[string]*application
 	connections   map[string]*connection
@@ -54,6 +55,7 @@ func New(t testing.TB) *Fake {
 		token:        "kindefake-token",
 	}
 	// Initialize domain state.
+	f.users = map[string]*user{}
 	f.organizations = map[string]*organization{}
 	f.applications = map[string]*application{}
 	f.connections = builtinConnections()
@@ -205,6 +207,7 @@ func (f *Fake) registerRawRoutes(mux *http.ServeMux) {
 	handle("POST /api/v1/connections", f.serveCreateConnection)
 	handle("PATCH /api/v1/connections/{connection_id}", f.serveUpdateConnection)
 	handle("GET /api/v1/applications/{application_id}/connections", f.serveApplicationConnections)
+	handle("GET /api/v1/users/{user_id}/identities", f.serveUserIdentities)
 }
 
 // authorized reports whether r carries the access token the fake issued.
