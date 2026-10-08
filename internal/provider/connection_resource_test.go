@@ -2,18 +2,33 @@ package provider
 
 import (
 	"fmt"
+	"maps"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
-	"github.com/nxt-fwd/kinde-go/api/connections"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindefake"
 )
 
+// testCheckConnectionOptions checks the options Kinde last received for the
+// connection whose ID is in *id. Kinde never returns options, so only the
+// fake can show them.
+func testCheckConnectionOptions(f *kindefake.Fake, id *string, want map[string]any) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		if got := f.ConnectionOptions(*id); !maps.Equal(got, want) {
+			return fmt.Errorf("options sent to Kinde = %v, want %v", got, want)
+		}
+		return nil
+	}
+}
+
 func TestAccConnectionResource_OAuth2(t *testing.T) {
+	f := testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
+	var connectionID string
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
@@ -22,9 +37,11 @@ func TestAccConnectionResource_OAuth2(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "name", testID),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "display_name", "Test OAuth2 Connection"),
-					resource.TestCheckResourceAttr("kinde_connection.oauth2", "strategy", string(connections.StrategyOAuth2Google)),
+					resource.TestCheckResourceAttr("kinde_connection.oauth2", "strategy", "oauth2:google"),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "options.client_id", "test-client-id"),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "options.client_secret", "test-client-secret"),
+					resource.TestCheckResourceAttrWith("kinde_connection.oauth2", "id", func(v string) error { connectionID = v; return nil }),
+					testCheckConnectionOptions(f, &connectionID, map[string]any{"client_id": "test-client-id", "client_secret": "test-client-secret"}),
 				),
 			},
 			// ImportState testing - we now expect empty options but not null
@@ -45,9 +62,10 @@ func TestAccConnectionResource_OAuth2(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "name", testID),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "display_name", "Test OAuth2 Connection"),
-					resource.TestCheckResourceAttr("kinde_connection.oauth2", "strategy", string(connections.StrategyOAuth2Google)),
+					resource.TestCheckResourceAttr("kinde_connection.oauth2", "strategy", "oauth2:google"),
 					resource.TestCheckNoResourceAttr("kinde_connection.oauth2", "options.client_id"),
 					resource.TestCheckNoResourceAttr("kinde_connection.oauth2", "options.client_secret"),
+					testCheckConnectionOptions(f, &connectionID, map[string]any{"client_id": "", "client_secret": ""}),
 				),
 			},
 			// Update with new values
@@ -56,20 +74,33 @@ func TestAccConnectionResource_OAuth2(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "name", testID),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "display_name", "Updated OAuth2 Connection"),
-					resource.TestCheckResourceAttr("kinde_connection.oauth2", "strategy", string(connections.StrategyOAuth2Google)),
+					resource.TestCheckResourceAttr("kinde_connection.oauth2", "strategy", "oauth2:google"),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "options.client_id", "updated-client-id"),
 					resource.TestCheckResourceAttr("kinde_connection.oauth2", "options.client_secret", "updated-client-secret"),
+					testCheckConnectionOptions(f, &connectionID, map[string]any{"client_id": "updated-client-id", "client_secret": "updated-client-secret"}),
 				),
+			},
+			// Deleted outside Terraform: refresh drops it and the plan recreates it.
+			{
+				PreConfig:          func() { f.RemoveConnection(connectionID) },
+				Config:             testAccConnectionResourceConfig_OAuth2Updated(testID),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			// Applying recreates it.
+			{
+				Config: testAccConnectionResourceConfig_OAuth2Updated(testID),
+				Check:  resource.TestCheckResourceAttrSet("kinde_connection.oauth2", "id"),
 			},
 		},
 	})
 }
 
 func TestAccConnectionResource_NoOptions(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
@@ -100,10 +131,10 @@ func TestAccConnectionResource_NoOptions(t *testing.T) {
 }
 
 func TestAccConnectionResource_EmptyOptionsNoDiff(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create with options
@@ -129,10 +160,10 @@ func TestAccConnectionResource_EmptyOptionsNoDiff(t *testing.T) {
 }
 
 func TestAccConnectionResource_SensitiveFieldHandling(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create with no sensitive fields - should create with null values
@@ -173,10 +204,10 @@ func TestAccConnectionResource_SensitiveFieldHandling(t *testing.T) {
 }
 
 func TestAccConnectionResource_ImportEmptyOptions(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create with empty options
@@ -198,10 +229,10 @@ func TestAccConnectionResource_ImportEmptyOptions(t *testing.T) {
 }
 
 func TestAccConnectionResource_EmptyToPopulatedOptions(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create with populated options - options should now be in state
