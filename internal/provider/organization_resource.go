@@ -3,14 +3,17 @@ package provider
 import (
 	"context"
 	"fmt"
-	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/organizations"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -23,7 +26,7 @@ func NewOrganizationResource() resource.Resource {
 }
 
 type OrganizationResource struct {
-	client *organizations.Client
+	client *kindeapi.Client
 }
 
 type OrganizationResourceModel struct {
@@ -38,6 +41,16 @@ type OrganizationResourceModel struct {
 	ThemeCode       types.String `tfsdk:"theme_code"`
 	Handle          types.String `tfsdk:"handle"`
 	CreatedOn       types.String `tfsdk:"created_on"`
+}
+
+// themeCodes lists the theme codes Kinde accepts, from the SDK's enum.
+func themeCodes() []string {
+	values := mgmt.UpdateOrganizationReqThemeCodeLight.AllValues()
+	codes := make([]string, len(values))
+	for i, v := range values {
+		codes[i] = string(v)
+	}
+	return codes
 }
 
 func (r *OrganizationResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -75,7 +88,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"background_color": schema.StringAttribute{
-				Description: "The background color of the organization's theme.",
+				Description: "The background color of the organization's theme, as a hex code such as `#ffffff`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -83,7 +96,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"button_color": schema.StringAttribute{
-				Description: "The button color of the organization's theme.",
+				Description: "The button color of the organization's theme, as a hex code such as `#0056f1`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -91,7 +104,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"button_text_color": schema.StringAttribute{
-				Description: "The button text color of the organization's theme.",
+				Description: "The button text color of the organization's theme, as a hex code such as `#ffffff`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -99,7 +112,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"link_color": schema.StringAttribute{
-				Description: "The link color of the organization's theme.",
+				Description: "The link color of the organization's theme, as a hex code such as `#0056f1`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -107,11 +120,14 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"theme_code": schema.StringAttribute{
-				Description: "The theme code of the organization.",
+				Description: "Whether the organization's pages use light mode, dark mode, or the user's preference: `light`, `dark`, or `user_preference`. Kinde chooses a default when this is not set.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.String{
+					stringvalidator.OneOf(themeCodes()...),
 				},
 			},
 			"handle": schema.StringAttribute{
@@ -123,7 +139,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"created_on": schema.StringAttribute{
-				Description: "The timestamp when the organization was created.",
+				Description: "When the organization was created, in ISO 8601 format as Kinde returns it.",
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -138,23 +154,54 @@ func (r *OrganizationResource) Configure(_ context.Context, req resource.Configu
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Organizations
+	r.client = pd.api
+}
+
+// flattenOrganization copies Kinde's view of an organization into m. Brand
+// colors are read in hex form, the form they are configured in.
+func flattenOrganization(org *mgmt.GetOrganizationResponse, m *OrganizationResourceModel) {
+	m.ID = stringValue(org.Code)
+	m.Code = stringValue(org.Code)
+	m.Name = stringValue(org.Name)
+	m.Handle = nilStringValue(org.Handle)
+	m.ExternalID = nilStringValue(org.ExternalID)
+	m.CreatedOn = stringValue(org.CreatedOn)
+
+	// Get returns a zero color, whose Hex is unset, for a missing or null
+	// color, so stringValue turns it into null.
+	background, _ := org.BackgroundColor.Get()
+	m.BackgroundColor = stringValue(background.Hex)
+	button, _ := org.ButtonColor.Get()
+	m.ButtonColor = stringValue(button.Hex)
+	buttonText, _ := org.ButtonTextColor.Get()
+	m.ButtonTextColor = stringValue(buttonText.Hex)
+	link, _ := org.LinkColor.Get()
+	m.LinkColor = stringValue(link.Hex)
+
+	if theme, ok := org.ThemeCode.Get(); ok {
+		m.ThemeCode = types.StringValue(string(theme))
+	} else {
+		m.ThemeCode = types.StringNull()
+	}
 }
 
 func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan OrganizationResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	createParams := organizations.CreateParams{
-		Name:   plan.Name.ValueString(),
-		Handle: plan.Handle.ValueString(),
-	}
-
-	organization, err := r.client.Create(ctx, createParams)
+	created, err := r.client.CreateOrganization(ctx, &mgmt.CreateOrganizationReq{
+		Name:            plan.Name.ValueString(),
+		Handle:          optString(plan.Handle),
+		ExternalID:      optString(plan.ExternalID),
+		BackgroundColor: optString(plan.BackgroundColor),
+		ButtonColor:     optString(plan.ButtonColor),
+		ButtonTextColor: optString(plan.ButtonTextColor),
+		LinkColor:       optString(plan.LinkColor),
+		ThemeCode:       optString(plan.ThemeCode),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Organization",
@@ -162,82 +209,40 @@ func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRe
 		)
 		return
 	}
-
-	// Get the created organization to ensure we have all fields
-	organization, err = r.client.Get(ctx, organization.Code)
-	if err != nil {
+	code, ok := created.Organization.Value.Code.Get()
+	if !ok || code == "" {
 		resp.Diagnostics.AddError(
-			"Error Reading Organization",
-			fmt.Sprintf("Could not read organization code %s: %s", organization.Code, err),
+			"Error Creating Organization",
+			"Kinde did not return the new organization's code.",
 		)
 		return
 	}
 
-	// Set values from API response
-	if createParams.Code != "" {
-		plan.Code = types.StringValue(createParams.Code)
-		plan.ID = types.StringValue(createParams.Code)
-	} else {
-		plan.Code = types.StringValue(organization.Code)
-		plan.ID = types.StringValue(organization.Code)
+	organization, err := r.client.GetOrganization(ctx, code)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Organization",
+			fmt.Sprintf("Could not read organization code %s: %s", code, err),
+		)
+		return
 	}
-	plan.Name = types.StringValue(organization.Name)
-	plan.CreatedOn = types.StringValue(organization.CreatedOn.Format(time.RFC3339))
-	plan.ThemeCode = types.StringValue(organization.ColorScheme)
+	flattenOrganization(organization, &plan)
 
-	// Handle optional values
-	if organization.Handle != nil {
-		plan.Handle = types.StringValue(*organization.Handle)
-	} else if createParams.Handle != "" {
-		// Fallback to plan value if API doesn't return it
-		plan.Handle = types.StringValue(createParams.Handle)
-	} else {
-		plan.Handle = types.StringNull()
-	}
-
-	if organization.ExternalID != nil {
-		plan.ExternalID = types.StringValue(*organization.ExternalID)
-	} else {
-		plan.ExternalID = types.StringNull()
-	}
-
-	if organization.BackgroundColor != nil {
-		plan.BackgroundColor = types.StringValue(organization.BackgroundColor.Hex)
-	} else {
-		plan.BackgroundColor = types.StringNull()
-	}
-
-	if organization.ButtonColor != nil {
-		plan.ButtonColor = types.StringValue(organization.ButtonColor.Hex)
-	} else {
-		plan.ButtonColor = types.StringNull()
-	}
-
-	if organization.ButtonTextColor != nil {
-		plan.ButtonTextColor = types.StringValue(organization.ButtonTextColor.Hex)
-	} else {
-		plan.ButtonTextColor = types.StringNull()
-	}
-
-	if organization.LinkColor != nil {
-		plan.LinkColor = types.StringValue(organization.LinkColor.Hex)
-	} else {
-		plan.LinkColor = types.StringNull()
-	}
-
-	diags = resp.State.Set(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
 func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state OrganizationResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	organization, err := r.client.Get(ctx, state.Code.ValueString())
+	organization, err := r.client.GetOrganization(ctx, state.Code.ValueString())
+	if kindeapi.IsNotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Organization",
@@ -245,208 +250,73 @@ func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadReques
 		)
 		return
 	}
+	flattenOrganization(organization, &state)
 
-	// Set known values
-	state.Code = types.StringValue(organization.Code)
-	state.ID = types.StringValue(organization.Code)
-	state.Name = types.StringValue(organization.Name)
-	state.CreatedOn = types.StringValue(organization.CreatedOn.Format(time.RFC3339))
-	state.ThemeCode = types.StringValue(organization.ColorScheme)
-
-	// Handle optional values
-	if organization.Handle != nil {
-		state.Handle = types.StringValue(*organization.Handle)
-	} else {
-		state.Handle = types.StringNull()
-	}
-
-	if organization.ExternalID != nil {
-		state.ExternalID = types.StringValue(*organization.ExternalID)
-	} else {
-		state.ExternalID = types.StringNull()
-	}
-
-	if organization.BackgroundColor != nil {
-		state.BackgroundColor = types.StringValue(organization.BackgroundColor.Hex)
-	} else {
-		state.BackgroundColor = types.StringNull()
-	}
-
-	if organization.ButtonColor != nil {
-		state.ButtonColor = types.StringValue(organization.ButtonColor.Hex)
-	} else {
-		state.ButtonColor = types.StringNull()
-	}
-
-	if organization.ButtonTextColor != nil {
-		state.ButtonTextColor = types.StringValue(organization.ButtonTextColor.Hex)
-	} else {
-		state.ButtonTextColor = types.StringNull()
-	}
-
-	if organization.LinkColor != nil {
-		state.LinkColor = types.StringValue(organization.LinkColor.Hex)
-	} else {
-		state.LinkColor = types.StringNull()
-	}
-
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan OrganizationResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	updateParams := organizations.UpdateParams{
-		Name:            plan.Name.ValueString(),
-		ExternalID:      plan.ExternalID.ValueString(),
-		BackgroundColor: plan.BackgroundColor.ValueString(),
-		ButtonColor:     plan.ButtonColor.ValueString(),
-		ButtonTextColor: plan.ButtonTextColor.ValueString(),
-		LinkColor:       plan.LinkColor.ValueString(),
-		ThemeCode:       plan.ThemeCode.ValueString(),
-		Handle:          plan.Handle.ValueString(),
+	code := plan.Code.ValueString()
+	var themeCode mgmt.OptUpdateOrganizationReqThemeCode
+	if !plan.ThemeCode.IsNull() && !plan.ThemeCode.IsUnknown() {
+		themeCode = mgmt.NewOptUpdateOrganizationReqThemeCode(mgmt.UpdateOrganizationReqThemeCode(plan.ThemeCode.ValueString()))
 	}
-
-	organization, err := r.client.Update(ctx, plan.Code.ValueString(), updateParams)
+	err := r.client.UpdateOrganization(ctx, code, &mgmt.UpdateOrganizationReq{
+		Name:            mgmt.NewOptString(plan.Name.ValueString()),
+		Handle:          optString(plan.Handle),
+		ExternalID:      optString(plan.ExternalID),
+		BackgroundColor: optString(plan.BackgroundColor),
+		ButtonColor:     optString(plan.ButtonColor),
+		ButtonTextColor: optString(plan.ButtonTextColor),
+		LinkColor:       optString(plan.LinkColor),
+		ThemeCode:       themeCode,
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Organization",
-			fmt.Sprintf("Could not update organization code %s: %s", plan.Code.ValueString(), err),
+			fmt.Sprintf("Could not update organization code %s: %s", code, err),
 		)
 		return
 	}
 
-	// Set known values
-	plan.Code = types.StringValue(organization.Code)
-	plan.ID = types.StringValue(organization.Code)
-	plan.Name = types.StringValue(organization.Name)
-	plan.CreatedOn = types.StringValue(organization.CreatedOn.Format(time.RFC3339))
-	plan.ThemeCode = types.StringValue(organization.ColorScheme)
-
-	// Handle optional values
-	if organization.Handle != nil {
-		plan.Handle = types.StringValue(*organization.Handle)
-	} else {
-		plan.Handle = types.StringNull()
+	organization, err := r.client.GetOrganization(ctx, code)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Organization",
+			fmt.Sprintf("Could not read organization code %s: %s", code, err),
+		)
+		return
 	}
+	flattenOrganization(organization, &plan)
 
-	if organization.ExternalID != nil {
-		plan.ExternalID = types.StringValue(*organization.ExternalID)
-	} else {
-		plan.ExternalID = types.StringNull()
-	}
-
-	if organization.BackgroundColor != nil {
-		plan.BackgroundColor = types.StringValue(organization.BackgroundColor.Hex)
-	} else {
-		plan.BackgroundColor = types.StringNull()
-	}
-
-	if organization.ButtonColor != nil {
-		plan.ButtonColor = types.StringValue(organization.ButtonColor.Hex)
-	} else {
-		plan.ButtonColor = types.StringNull()
-	}
-
-	if organization.ButtonTextColor != nil {
-		plan.ButtonTextColor = types.StringValue(organization.ButtonTextColor.Hex)
-	} else {
-		plan.ButtonTextColor = types.StringNull()
-	}
-
-	if organization.LinkColor != nil {
-		plan.LinkColor = types.StringValue(organization.LinkColor.Hex)
-	} else {
-		plan.LinkColor = types.StringNull()
-	}
-
-	diags = resp.State.Set(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
 func (r *OrganizationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state OrganizationResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	err := r.client.Delete(ctx, state.Code.ValueString())
-	if err != nil {
+	err := r.client.DeleteOrganization(ctx, state.Code.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting Organization",
 			fmt.Sprintf("Could not delete organization code %s: %s", state.Code.ValueString(), err),
 		)
-		return
 	}
 }
 
+// ImportState takes an organization code. Read fills in the rest, and a code
+// that does not exist fails the import.
 func (r *OrganizationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Get the organization by code
-	organization, err := r.client.Get(ctx, req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Reading Organization",
-			fmt.Sprintf("Could not read organization code %s: %s", req.ID, err),
-		)
-		return
-	}
-
-	// Create a new state
-	var state OrganizationResourceModel
-
-	// Set known values
-	state.ID = types.StringValue(organization.Code)
-	state.Code = types.StringValue(organization.Code)
-	state.Name = types.StringValue(organization.Name)
-	state.CreatedOn = types.StringValue(organization.CreatedOn.Format(time.RFC3339))
-	state.ThemeCode = types.StringValue(organization.ColorScheme)
-
-	// Handle optional values
-	if organization.Handle != nil {
-		state.Handle = types.StringValue(*organization.Handle)
-	} else {
-		state.Handle = types.StringNull()
-	}
-
-	if organization.ExternalID != nil {
-		state.ExternalID = types.StringValue(*organization.ExternalID)
-	} else {
-		state.ExternalID = types.StringNull()
-	}
-
-	if organization.BackgroundColor != nil {
-		state.BackgroundColor = types.StringValue(organization.BackgroundColor.Hex)
-	} else {
-		state.BackgroundColor = types.StringNull()
-	}
-
-	if organization.ButtonColor != nil {
-		state.ButtonColor = types.StringValue(organization.ButtonColor.Hex)
-	} else {
-		state.ButtonColor = types.StringNull()
-	}
-
-	if organization.ButtonTextColor != nil {
-		state.ButtonTextColor = types.StringValue(organization.ButtonTextColor.Hex)
-	} else {
-		state.ButtonTextColor = types.StringNull()
-	}
-
-	if organization.LinkColor != nil {
-		state.LinkColor = types.StringValue(organization.LinkColor.Hex)
-	} else {
-		state.LinkColor = types.StringNull()
-	}
-
-	// Set the state
-	diags := resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("code"), req.ID)...)
 }
