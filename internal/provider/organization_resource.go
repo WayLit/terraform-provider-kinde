@@ -10,7 +10,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go"
 	"github.com/nxt-fwd/kinde-go/api/organizations"
 )
 
@@ -135,20 +134,11 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 }
 
 func (r *OrganizationResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	pd := providerDataFrom(req.ProviderData, &resp.Diagnostics)
+	if pd == nil {
 		return
 	}
-
-	client, ok := req.ProviderData.(*kinde.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *kinde.Client, got: %T. Please report this issue to the provider developers.", req.ProviderData),
-		)
-		return
-	}
-
-	r.client = client.Organizations
+	r.client = pd.legacy.Organizations
 }
 
 func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
