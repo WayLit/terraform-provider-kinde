@@ -57,3 +57,22 @@ func TestStringValue(t *testing.T) {
 		})
 	}
 }
+
+func TestBoolValue(t *testing.T) {
+	tests := []struct {
+		name string
+		in   mgmt.OptBool
+		want types.Bool
+	}{
+		{"unset", mgmt.OptBool{}, types.BoolNull()},
+		{"false", mgmt.NewOptBool(false), types.BoolValue(false)},
+		{"true", mgmt.NewOptBool(true), types.BoolValue(true)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := boolValue(tt.in); !got.Equal(tt.want) {
+				t.Fatalf("boolValue = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
