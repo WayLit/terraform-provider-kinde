@@ -50,10 +50,11 @@ var tokenTimeout = 30 * time.Second
 
 // Client calls the Kinde management API.
 type Client struct {
-	api    *mgmt.Client
-	http   *http.Client
-	domain string
-	tokens oauth2.TokenSource
+	api      *mgmt.Client
+	http     *http.Client
+	domain   string
+	audience string
+	tokens   oauth2.TokenSource
 }
 
 // New builds a client without making network calls. Call CheckCredentials to
@@ -95,7 +96,13 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kinde: %w", err)
 	}
-	return &Client{api: api, http: httpClient, domain: domain, tokens: tokens}, nil
+	return &Client{api: api, http: httpClient, domain: domain, audience: audience, tokens: tokens}, nil
+}
+
+// Audience returns the audience the client requests tokens for, including
+// the <domain>/api default.
+func (c *Client) Audience() string {
+	return c.audience
 }
 
 // CheckCredentials fetches an access token. A wrong domain, client ID,

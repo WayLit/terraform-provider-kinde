@@ -94,9 +94,9 @@ func (p *KindeProvider) Configure(ctx context.Context, req provider.ConfigureReq
 	if !data.Domain.IsNull() && !data.Domain.IsUnknown() {
 		opts.WithDomain(data.Domain.ValueString())
 	}
-	if !data.Audience.IsNull() && !data.Audience.IsUnknown() {
-		opts.WithAudience(data.Audience.ValueString())
-	}
+	// The legacy client has no default audience, so give it the one the
+	// kindeapi client resolved.
+	opts.WithAudience(client.Audience())
 	if !data.ClientID.IsNull() && !data.ClientID.IsUnknown() {
 		opts.WithClientID(data.ClientID.ValueString())
 	}
