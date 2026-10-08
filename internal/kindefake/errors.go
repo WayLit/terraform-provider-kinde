@@ -47,3 +47,8 @@ func writeAPIError(w http.ResponseWriter, e *apiError) {
 		"errors": []map[string]string{{"code": e.code, "message": e.message}},
 	})
 }
+
+// notFound returns a 404 with Kinde error code code.
+func notFound(code, message string) error {
+	return &apiError{status: http.StatusNotFound, code: code, message: message}
+}

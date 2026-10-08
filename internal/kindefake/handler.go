@@ -25,3 +25,9 @@ func (s security) HandleKindeBearerAuth(ctx context.Context, _ mgmt.OperationNam
 	}
 	return ctx, nil
 }
+
+// success returns the body Kinde sends when an operation has nothing else to
+// report.
+func success() *mgmt.SuccessResponse {
+	return &mgmt.SuccessResponse{Code: mgmt.NewOptString("OK"), Message: mgmt.NewOptString("Success")}
+}
