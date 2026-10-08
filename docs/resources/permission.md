@@ -58,7 +58,7 @@ resource "kinde_permission" "full_example" {
 
 ### Optional
 
-- `description` (String) Description of the permission
+- `description` (String) Description of the permission. Kinde keeps a description once it is set, so removing this attribute leaves the current value in place.
 
 ### Read-Only
 
