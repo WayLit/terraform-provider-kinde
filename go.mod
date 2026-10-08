@@ -10,6 +10,7 @@ require (
 	github.com/hashicorp/terraform-plugin-testing v1.11.0
 	github.com/kinde-oss/kinde-go v0.3.0
 	github.com/nxt-fwd/kinde-go v0.0.8
+	github.com/nyaruka/phonenumbers v1.8.1
 	github.com/ogen-go/ogen v1.14.0
 	golang.org/x/oauth2 v0.37.0
 )
@@ -58,7 +59,6 @@ require (
 	github.com/mitchellh/go-wordwrap v1.0.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
-	github.com/nyaruka/phonenumbers v1.5.0 // indirect
 	github.com/oklog/run v1.0.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
