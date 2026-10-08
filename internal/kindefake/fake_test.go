@@ -152,3 +152,17 @@ func TestConnectionsAreListedInLiveShape(t *testing.T) {
 		}
 	}
 }
+
+func TestFailRequestsAnswersMatchingPaths(t *testing.T) {
+	f := kindefake.New(t)
+	token := fetchToken(t, f)
+	f.FailRequests("/business", http.StatusNotFound, "ROUTE_NOT_FOUND")
+
+	resp := get(t, f, "/api/v1/business", token)
+	if resp.StatusCode != http.StatusNotFound || errorCode(t, resp) != "ROUTE_NOT_FOUND" {
+		t.Fatalf("status = %d, want 404 ROUTE_NOT_FOUND", resp.StatusCode)
+	}
+	if resp := get(t, f, "/api/v1/users", token); resp.StatusCode == http.StatusNotFound {
+		t.Fatal("a path without the suffix must not fail")
+	}
+}

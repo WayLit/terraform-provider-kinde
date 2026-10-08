@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -165,7 +166,7 @@ func (r *RoleResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	role, err := r.getRole(ctx, state.ID.ValueString())
-	if kindeapi.IsNotFound(err) {
+	if errors.Is(err, errRoleNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -303,8 +304,16 @@ func (r *RoleResource) ImportState(ctx context.Context, req resource.ImportState
 }
 
 // getRole reads a role and every page of its permissions.
+// errRoleNotFound marks a 404 from GetRole itself: the role is gone. A 404
+// from the follow-up permissions call is an ordinary error, because dropping
+// state there would make the next apply create a duplicate role.
+var errRoleNotFound = errors.New("role not found")
+
 func (r *RoleResource) getRole(ctx context.Context, id string) (*kindeRole, error) {
 	res, err := r.client.GetRole(ctx, id)
+	if kindeapi.IsNotFound(err) {
+		return nil, fmt.Errorf("%w: %w", errRoleNotFound, err)
+	}
 	if err != nil {
 		return nil, err
 	}
