@@ -6,14 +6,12 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/permissions"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -26,19 +24,8 @@ func NewPermissionResource() resource.Resource {
 }
 
 type PermissionResource struct {
-	client *permissions.Client
+	client *kindeapi.Client
 }
-
-type permissionsPage struct {
-	Code        string                   `json:"code"`
-	Message     string                   `json:"message"`
-	NextToken   string                   `json:"next_token"`
-	Permissions []permissions.Permission `json:"permissions"`
-}
-
-func (p permissionsPage) getData() []permissions.Permission { return p.Permissions }
-
-func (p permissionsPage) getNextToken() string { return p.NextToken }
 
 func (r *PermissionResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_permission"
@@ -63,8 +50,10 @@ func (r *PermissionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Required:            true,
 			},
 			"description": schema.StringAttribute{
-				MarkdownDescription: "Description of the permission",
+				MarkdownDescription: "Description of the permission. Kinde keeps a description once it is set, so removing this attribute leaves the current value in place.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
 	}
@@ -75,7 +64,7 @@ func (r *PermissionResource) Configure(_ context.Context, req resource.Configure
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Permissions
+	r.client = pd.api
 }
 
 func (r *PermissionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -86,9 +75,7 @@ func (r *PermissionResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	createParams := expandPermissionCreateParams(plan)
-	permission, err := r.client.Create(ctx, createParams)
-	if err != nil {
+	if err := r.client.CreatePermission(ctx, expandPermissionCreateReq(plan)); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Permission",
 			fmt.Sprintf("Could not create permission: %s", err),
@@ -96,19 +83,20 @@ func (r *PermissionResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	plan.ID = types.StringValue(permission.ID)
-
-	// After creation, search for the permission to get its full details
-	searchParams := permissions.SearchParams{
-		Name: plan.Name.ValueString(),
-		Key:  plan.Key.ValueString(),
-	}
-
-	permission, err = r.client.Search(ctx, searchParams)
+	// Kinde does not return the new permission's ID, so find it by name and key.
+	perms, err := r.client.ListPermissions(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Created Permission",
 			fmt.Sprintf("Could not read created permission: %s", err),
+		)
+		return
+	}
+	permission, ok := permissionByNameAndKey(perms, plan.Name.ValueString(), plan.Key.ValueString())
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Error Reading Created Permission",
+			fmt.Sprintf("Could not find permission with name %q and key %q after creating it", plan.Name.ValueString(), plan.Key.ValueString()),
 		)
 		return
 	}
@@ -126,7 +114,7 @@ func (r *PermissionResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	perms, err := listAllPermissions(ctx, r.client)
+	perms, err := r.client.ListPermissions(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Permission",
@@ -135,32 +123,19 @@ func (r *PermissionResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	// First try to find by ID if we have one
-	if !state.ID.IsNull() {
-		for _, p := range perms {
-			if p.ID == state.ID.ValueString() {
-				state = flattenPermissionResource(&p)
-				diags = resp.State.Set(ctx, &state)
-				resp.Diagnostics.Append(diags...)
-				return
-			}
-		}
+	// Find the permission by ID, falling back to its name and key.
+	permission, ok := permissionByID(perms, state.ID.ValueString())
+	if !ok && !state.Name.IsNull() && !state.Key.IsNull() {
+		permission, ok = permissionByNameAndKey(perms, state.Name.ValueString(), state.Key.ValueString())
+	}
+	if !ok {
+		resp.State.RemoveResource(ctx)
+		return
 	}
 
-	// If we couldn't find by ID, try to find by name and key
-	if !state.Name.IsNull() && !state.Key.IsNull() {
-		for _, p := range perms {
-			if p.Name == state.Name.ValueString() && p.Key == state.Key.ValueString() {
-				state = flattenPermissionResource(&p)
-				diags = resp.State.Set(ctx, &state)
-				resp.Diagnostics.Append(diags...)
-				return
-			}
-		}
-	}
-
-	// If we couldn't find the permission, remove it from state
-	resp.State.RemoveResource(ctx)
+	state = flattenPermissionResource(permission)
+	diags = resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(diags...)
 }
 
 func (r *PermissionResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -171,9 +146,7 @@ func (r *PermissionResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	updateParams := expandPermissionUpdateParams(plan)
-	err := r.client.Update(ctx, plan.ID.ValueString(), updateParams)
-	if err != nil {
+	if err := r.client.UpdatePermission(ctx, plan.ID.ValueString(), expandPermissionUpdateReq(plan)); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Permission",
 			fmt.Sprintf("Could not update permission ID %s: %s", plan.ID.ValueString(), err),
@@ -181,17 +154,19 @@ func (r *PermissionResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	// After update, search for the permission to get its latest state
-	searchParams := permissions.SearchParams{
-		Name: plan.Name.ValueString(),
-		Key:  plan.Key.ValueString(),
-	}
-
-	permission, err := r.client.Search(ctx, searchParams)
+	perms, err := r.client.ListPermissions(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Updated Permission",
 			fmt.Sprintf("Could not read updated permission: %s", err),
+		)
+		return
+	}
+	permission, ok := permissionByID(perms, plan.ID.ValueString())
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Error Reading Updated Permission",
+			fmt.Sprintf("Could not find permission ID %s after updating it", plan.ID.ValueString()),
 		)
 		return
 	}
@@ -209,7 +184,8 @@ func (r *PermissionResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
-	if err := r.client.Delete(ctx, state.ID.ValueString()); err != nil {
+	err := r.client.DeletePermission(ctx, state.ID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting Permission",
 			fmt.Sprintf("Could not delete permission ID %s: %s", state.ID.ValueString(), err),
@@ -219,7 +195,7 @@ func (r *PermissionResource) Delete(ctx context.Context, req resource.DeleteRequ
 }
 
 func (r *PermissionResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	perms, err := listAllPermissions(ctx, r.client)
+	perms, err := r.client.ListPermissions(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Permission",
@@ -228,21 +204,15 @@ func (r *PermissionResource) ImportState(ctx context.Context, req resource.Impor
 		return
 	}
 
-	// Find the permission by ID
-	for _, p := range perms {
-		if p.ID == req.ID {
-			state := flattenPermissionResource(&p)
-			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-			return
-		}
+	permission, ok := permissionByID(perms, req.ID)
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Error Reading Permission",
+			fmt.Sprintf("Could not find permission with ID %s", req.ID),
+		)
+		return
 	}
 
-	resp.Diagnostics.AddError(
-		"Error Reading Permission",
-		fmt.Sprintf("Could not find permission with ID %s", req.ID),
-	)
-}
-
-func listAllPermissions(ctx context.Context, client *permissions.Client) ([]permissions.Permission, error) {
-	return getAllPages[permissions.Permission, permissionsPage](ctx, client, "/api/v1/permissions", url.Values{})
+	state := flattenPermissionResource(permission)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

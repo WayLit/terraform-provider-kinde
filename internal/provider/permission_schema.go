@@ -5,7 +5,7 @@ package provider
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/permissions"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
 )
 
 type PermissionResourceModel struct {
@@ -15,54 +15,48 @@ type PermissionResourceModel struct {
 	Description types.String `tfsdk:"description"`
 }
 
-func expandPermissionCreateParams(d PermissionResourceModel) permissions.CreateParams {
-	return permissions.CreateParams{
-		Name:        d.Name.ValueString(),
-		Key:         d.Key.ValueString(),
-		Description: d.Description.ValueString(),
+func expandPermissionCreateReq(d PermissionResourceModel) mgmt.CreatePermissionReq {
+	return mgmt.CreatePermissionReq{
+		Name:        optString(d.Name),
+		Key:         optString(d.Key),
+		Description: optString(d.Description),
 	}
 }
 
-func expandPermissionUpdateParams(d PermissionResourceModel) permissions.UpdateParams {
-	return permissions.UpdateParams{
-		Name:        d.Name.ValueString(),
-		Key:         d.Key.ValueString(),
-		Description: d.Description.ValueString(),
+func expandPermissionUpdateReq(d PermissionResourceModel) mgmt.UpdatePermissionsReq {
+	return mgmt.UpdatePermissionsReq{
+		Name:        optString(d.Name),
+		Key:         optString(d.Key),
+		Description: optString(d.Description),
 	}
 }
 
-func flattenPermissionResource(permission *permissions.Permission) PermissionResourceModel {
+func flattenPermissionResource(permission mgmt.Permissions) PermissionResourceModel {
 	return PermissionResourceModel{
-		ID:          types.StringValue(permission.ID),
-		Name:        types.StringValue(permission.Name),
-		Key:         types.StringValue(permission.Key),
-		Description: types.StringValue(permission.Description),
+		ID:          stringValue(permission.ID),
+		Name:        stringValue(permission.Name),
+		Key:         stringValue(permission.Key),
+		Description: stringValue(permission.Description),
 	}
 }
 
-type PermissionDataSourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Key         types.String `tfsdk:"key"`
-	Description types.String `tfsdk:"description"`
+// permissionByID returns the permission with the given ID.
+func permissionByID(perms []mgmt.Permissions, id string) (mgmt.Permissions, bool) {
+	for _, p := range perms {
+		if p.ID.Or("") == id {
+			return p, true
+		}
+	}
+	return mgmt.Permissions{}, false
 }
 
-//nolint:unused
-func expandPermissionDataSourceModel(model PermissionDataSourceModel) *permissions.Permission {
-	return &permissions.Permission{
-		ID:          model.ID.ValueString(),
-		Name:        model.Name.ValueString(),
-		Key:         model.Key.ValueString(),
-		Description: model.Description.ValueString(),
+// permissionByNameAndKey returns the first permission with the given name and
+// key.
+func permissionByNameAndKey(perms []mgmt.Permissions, name, key string) (mgmt.Permissions, bool) {
+	for _, p := range perms {
+		if p.Name.Or("") == name && p.Key.Or("") == key {
+			return p, true
+		}
 	}
-}
-
-//nolint:unused
-func flattenPermissionDataSource(permission *permissions.Permission) PermissionDataSourceModel {
-	return PermissionDataSourceModel{
-		ID:          types.StringValue(permission.ID),
-		Name:        types.StringValue(permission.Name),
-		Key:         types.StringValue(permission.Key),
-		Description: types.StringValue(permission.Description),
-	}
+	return mgmt.Permissions{}, false
 }
