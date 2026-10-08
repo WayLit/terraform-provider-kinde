@@ -34,6 +34,8 @@ type Fake struct {
 	pageLimit     int
 
 	// Domain state.
+	connections map[string]*connection
+	apis        map[string]*apiResource
 	permissions map[string]mgmt.Permissions
 	roles       map[string]*role
 }
@@ -47,6 +49,8 @@ func New(t testing.TB) *Fake {
 		token:        "kindefake-token",
 	}
 	// Initialize domain state.
+	f.connections = builtinConnections()
+	f.apis = map[string]*apiResource{}
 	f.permissions = map[string]mgmt.Permissions{}
 	f.roles = map[string]*role{}
 
@@ -61,6 +65,7 @@ func New(t testing.TB) *Fake {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /oauth2/token", f.serveToken)
+	f.registerRawRoutes(mux)
 	mux.Handle("/", api)
 
 	srv := httptest.NewServer(f.throttled(mux))
@@ -172,4 +177,36 @@ func nextTokenPage[T any](f *Fake, items []T, pageSize mgmt.OptNilInt, nextToken
 		next = strconv.Itoa(end)
 	}
 	return items[start:end], next, nil
+}
+
+// registerRawRoutes adds the routes the fake serves itself instead of through
+// the generated server, for endpoints where the live API and the spec
+// disagree or the generated server cannot decode the request. They take
+// precedence over the generated server, need the access token, and are
+// throttled like any other API route.
+func (f *Fake) registerRawRoutes(mux *http.ServeMux) {
+	handle := func(pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if !f.authorized(r) {
+				writeAPIError(w, &apiError{status: http.StatusUnauthorized, code: "UNAUTHORIZED", message: "kindefake: invalid access token"})
+				return
+			}
+			h(w, r)
+		})
+	}
+	handle("GET /api/v1/connections", f.serveListConnections)
+	handle("POST /api/v1/connections", f.serveCreateConnection)
+	handle("PATCH /api/v1/connections/{connection_id}", f.serveUpdateConnection)
+}
+
+// authorized reports whether r carries the access token the fake issued.
+func (f *Fake) authorized(r *http.Request) bool {
+	return r.Header.Get("Authorization") == "Bearer "+f.token
+}
+
+// writeJSON writes v as a JSON response with the given status.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
 }

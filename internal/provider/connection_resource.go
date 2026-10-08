@@ -11,7 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/connections"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -24,7 +25,7 @@ func NewConnectionResource() resource.Resource {
 }
 
 type ConnectionResource struct {
-	client *connections.Client
+	client *kindeapi.Client
 }
 
 // ConnectionOptionsModel represents OAuth2 connection options.
@@ -59,20 +60,52 @@ func (m *ConnectionOptionsModel) Validate() error {
 	return nil
 }
 
-// ToAPIOptions converts the model to API options.
-func (m *ConnectionOptionsModel) ToAPIOptions() connections.SocialConnectionOptions {
-	if m == nil {
-		return connections.SocialConnectionOptions{}
-	}
+// createOptions converts the model to social-connection options for a
+// create request. Unset fields are sent as "", so removing them from the
+// configuration clears them in Kinde.
+func (m *ConnectionOptionsModel) createOptions() mgmt.OptCreateConnectionReqOptions {
+	return mgmt.NewOptCreateConnectionReqOptions(mgmt.NewCreateConnectionReqOptions0CreateConnectionReqOptions(
+		mgmt.CreateConnectionReqOptions0{
+			ClientID:     mgmt.NewOptString(m.ClientID.ValueString()),
+			ClientSecret: mgmt.NewOptString(m.ClientSecret.ValueString()),
+		},
+	))
+}
 
-	opts := connections.SocialConnectionOptions{}
-	if !m.ClientID.IsNull() {
-		opts.ClientID = m.ClientID.ValueString()
+// updateOptions is createOptions for an update request.
+func (m *ConnectionOptionsModel) updateOptions() mgmt.OptUpdateConnectionReqOptions {
+	return mgmt.NewOptUpdateConnectionReqOptions(mgmt.NewUpdateConnectionReqOptions0UpdateConnectionReqOptions(
+		mgmt.UpdateConnectionReqOptions0{
+			ClientID:     mgmt.NewOptString(m.ClientID.ValueString()),
+			ClientSecret: mgmt.NewOptString(m.ClientSecret.ValueString()),
+		},
+	))
+}
+
+// isSocialStrategy reports whether strategy is an OAuth2 social connection,
+// the only kind whose options this resource manages.
+func isSocialStrategy(strategy string) bool {
+	switch mgmt.CreateConnectionReqStrategy(strategy) {
+	case mgmt.CreateConnectionReqStrategyOAuth2Apple,
+		mgmt.CreateConnectionReqStrategyOAuth2AzureAd,
+		mgmt.CreateConnectionReqStrategyOAuth2Bitbucket,
+		mgmt.CreateConnectionReqStrategyOAuth2Discord,
+		mgmt.CreateConnectionReqStrategyOAuth2Facebook,
+		mgmt.CreateConnectionReqStrategyOAuth2Github,
+		mgmt.CreateConnectionReqStrategyOAuth2Gitlab,
+		mgmt.CreateConnectionReqStrategyOAuth2Google,
+		mgmt.CreateConnectionReqStrategyOAuth2Linkedin,
+		mgmt.CreateConnectionReqStrategyOAuth2Microsoft,
+		mgmt.CreateConnectionReqStrategyOAuth2Patreon,
+		mgmt.CreateConnectionReqStrategyOAuth2Slack,
+		mgmt.CreateConnectionReqStrategyOAuth2Stripe,
+		mgmt.CreateConnectionReqStrategyOAuth2Twitch,
+		mgmt.CreateConnectionReqStrategyOAuth2Twitter,
+		mgmt.CreateConnectionReqStrategyOAuth2Xero:
+		return true
+	default:
+		return false
 	}
-	if !m.ClientSecret.IsNull() {
-		opts.ClientSecret = m.ClientSecret.ValueString()
-	}
-	return opts
 }
 
 // ConnectionResourceModel represents the resource model.
@@ -201,40 +234,33 @@ func (r *ConnectionResource) Configure(_ context.Context, req resource.Configure
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Connections
+	r.client = pd.api
 }
 
 func (r *ConnectionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan ConnectionResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Convert options to map for API
-	var options interface{}
+	createReq := &mgmt.CreateConnectionReq{
+		Name:        optString(plan.Name),
+		DisplayName: optString(plan.DisplayName),
+		Strategy:    mgmt.NewOptCreateConnectionReqStrategy(mgmt.CreateConnectionReqStrategy(plan.Strategy.ValueString())),
+	}
 	if plan.Options != nil {
-		var err error
-		options, err = r.convertOptionsToMap(plan.Strategy.ValueString(), plan.Options)
-		if err != nil {
+		if !isSocialStrategy(plan.Strategy.ValueString()) {
 			resp.Diagnostics.AddError(
 				"Error Converting Options",
-				fmt.Sprintf("Could not convert options: %s", err),
+				fmt.Sprintf("Could not convert options: unsupported strategy: %s", plan.Strategy.ValueString()),
 			)
 			return
 		}
+		createReq.Options = plan.Options.createOptions()
 	}
 
-	// Create connection
-	createParams := connections.CreateParams{
-		Name:        plan.Name.ValueString(),
-		DisplayName: plan.DisplayName.ValueString(),
-		Strategy:    connections.Strategy(plan.Strategy.ValueString()),
-		Options:     options,
-	}
-
-	conn, err := r.client.Create(ctx, createParams)
+	created, err := r.client.CreateConnection(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Connection",
@@ -242,77 +268,82 @@ func (r *ConnectionResource) Create(ctx context.Context, req resource.CreateRequ
 		)
 		return
 	}
+	id, ok := created.Connection.Value.ID.Get()
+	if !ok || id == "" {
+		resp.Diagnostics.AddError("Error Creating Connection", "Kinde did not return the new connection's ID.")
+		return
+	}
 
 	// Set ID from response, keep other fields from plan including options
-	plan.ID = types.StringValue(conn.ID)
+	plan.ID = types.StringValue(id)
 
 	// Store plan in state, including options with sensitive values
 	// We'll rely on state encryption for security
-	diags = resp.State.Set(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ConnectionResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state ConnectionResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	conn, err := r.client.Get(ctx, state.ID.ValueString())
+	got, err := r.client.GetConnection(ctx, state.ID.ValueString())
 	if err != nil {
+		if kindeapi.IsNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Error Reading Connection",
 			fmt.Sprintf("Could not read connection ID %s: %s", state.ID.ValueString(), err),
 		)
 		return
 	}
+	conn, ok := got.Connection.Get()
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Error Reading Connection",
+			fmt.Sprintf("Kinde returned no connection for ID %s.", state.ID.ValueString()),
+		)
+		return
+	}
 
 	// Set basic fields from API response
-	state.ID = types.StringValue(conn.ID)
-	state.Name = types.StringValue(conn.Name)
-	state.DisplayName = types.StringValue(conn.DisplayName)
-	state.Strategy = types.StringValue(conn.Strategy)
+	state.Name = stringValue(conn.Name)
+	state.DisplayName = stringValue(conn.DisplayName)
+	state.Strategy = stringValue(conn.Strategy)
 
 	// API doesn't return sensitive options, so preserve them from state
 	// We're relying on state encryption for security
 
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *ConnectionResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state ConnectionResourceModel
+	var plan ConnectionResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Convert options to map for API
-	var options interface{}
+	updateReq := &mgmt.UpdateConnectionReq{
+		Name:        optString(plan.Name),
+		DisplayName: optString(plan.DisplayName),
+	}
 	if plan.Options != nil {
-		var err error
-		options, err = r.convertOptionsToMap(plan.Strategy.ValueString(), plan.Options)
-		if err != nil {
+		if !isSocialStrategy(plan.Strategy.ValueString()) {
 			resp.Diagnostics.AddError(
 				"Error Converting Options",
-				fmt.Sprintf("Could not convert options: %s", err),
+				fmt.Sprintf("Could not convert options: unsupported strategy: %s", plan.Strategy.ValueString()),
 			)
 			return
 		}
+		updateReq.Options = plan.Options.updateOptions()
 	}
 
-	// Update connection
-	updateParams := connections.UpdateParams{
-		Name:        plan.Name.ValueString(),
-		DisplayName: plan.DisplayName.ValueString(),
-		Options:     options,
-	}
-
-	_, err := r.client.Update(ctx, plan.ID.ValueString(), updateParams)
-	if err != nil {
+	if err := r.client.UpdateConnection(ctx, plan.ID.ValueString(), updateReq); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Connection",
 			fmt.Sprintf("Could not update connection ID %s: %s", plan.ID.ValueString(), err),
@@ -322,25 +353,22 @@ func (r *ConnectionResource) Update(ctx context.Context, req resource.UpdateRequ
 
 	// Store plan in state, including options with sensitive values
 	// We'll rely on state encryption for security
-	diags := resp.State.Set(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ConnectionResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state ConnectionResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	err := r.client.Delete(ctx, state.ID.ValueString())
-	if err != nil {
+	err := r.client.DeleteConnection(ctx, state.ID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting Connection",
 			fmt.Sprintf("Could not delete connection ID %s: %s", state.ID.ValueString(), err),
 		)
-		return
 	}
 }
 
@@ -357,35 +385,6 @@ func (r *ConnectionResource) ImportState(ctx context.Context, req resource.Impor
 	)
 }
 
-func (r *ConnectionResource) convertOptionsToMap(strategy string, options *ConnectionOptionsModel) (interface{}, error) {
-	if options == nil {
-		return map[string]interface{}{}, nil
-	}
-
-	switch connections.Strategy(strategy) {
-	case connections.StrategyOAuth2Apple,
-		connections.StrategyOAuth2AzureAD,
-		connections.StrategyOAuth2Bitbucket,
-		connections.StrategyOAuth2Discord,
-		connections.StrategyOAuth2Facebook,
-		connections.StrategyOAuth2Github,
-		connections.StrategyOAuth2Gitlab,
-		connections.StrategyOAuth2Google,
-		connections.StrategyOAuth2LinkedIn,
-		connections.StrategyOAuth2Microsoft,
-		connections.StrategyOAuth2Patreon,
-		connections.StrategyOAuth2Slack,
-		connections.StrategyOAuth2Stripe,
-		connections.StrategyOAuth2Twitch,
-		connections.StrategyOAuth2Twitter,
-		connections.StrategyOAuth2Xero:
-		return options.ToAPIOptions(), nil
-
-	default:
-		return nil, fmt.Errorf("unsupported strategy: %s", strategy)
-	}
-}
-
 func (r *ConnectionResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data ConnectionResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -395,8 +394,7 @@ func (r *ConnectionResource) ValidateConfig(ctx context.Context, req resource.Va
 
 	// Validate strategy
 	if !data.Strategy.IsNull() {
-		strategy := connections.Strategy(data.Strategy.ValueString())
-		if strings.HasPrefix(string(strategy), "oauth2:") {
+		if strings.HasPrefix(data.Strategy.ValueString(), "oauth2:") {
 			// Validate options if present
 			if data.Options != nil {
 				if err := data.Options.Validate(); err != nil {

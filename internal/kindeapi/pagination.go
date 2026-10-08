@@ -33,3 +33,30 @@ func allPages[T any](ctx context.Context, fetch func(ctx context.Context, nextTo
 		nextToken = next
 	}
 }
+
+// allCursorPages collects every page of a starting_after-paginated endpoint.
+// fetch gets "" for the first page; the next page starts after the last
+// item's ID.
+func allCursorPages[T any](ctx context.Context, id func(T) string, fetch func(ctx context.Context, startingAfter string) (items []T, hasMore bool, err error)) ([]T, error) {
+	var all []T
+	seen := map[string]bool{}
+	after := ""
+	for {
+		items, hasMore, err := fetch(ctx, after)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if !hasMore {
+			return all, nil
+		}
+		if len(items) == 0 {
+			return nil, fmt.Errorf("kinde: a page after %q reported more results but returned none", after)
+		}
+		after = id(items[len(items)-1])
+		if seen[after] {
+			return nil, fmt.Errorf("kinde: starting_after %q repeated", after)
+		}
+		seen[after] = true
+	}
+}
