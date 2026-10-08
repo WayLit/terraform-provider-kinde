@@ -3,10 +3,11 @@ package provider
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -14,7 +15,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/nxt-fwd/kinde-go/api/users"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -27,7 +29,7 @@ func NewUserResource() resource.Resource {
 }
 
 type UserResource struct {
-	client *users.Client
+	client *kindeapi.Client
 }
 
 type UserResourceModel struct {
@@ -37,9 +39,20 @@ type UserResourceModel struct {
 	IsSuspended      types.Bool   `tfsdk:"is_suspended"`
 	OrganizationCode types.String `tfsdk:"organization_code"`
 	CreatedOn        types.String `tfsdk:"created_on"`
-	UpdatedOn        types.String `tfsdk:"updated_on"`
 	Identities       types.Set    `tfsdk:"identities"`
 }
+
+// userIdentityModel is one element of the identities attribute.
+type userIdentityModel struct {
+	Type  string `tfsdk:"type"`
+	Value string `tfsdk:"value"`
+}
+
+// userIdentityObjectType is the element type of the identities attribute.
+var userIdentityObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
+	"type":  types.StringType,
+	"value": types.StringType,
+}}
 
 func (r *UserResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_user"
@@ -71,18 +84,12 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Description: "Whether the user is suspended.",
 			},
 			"organization_code": schema.StringAttribute{
-				Optional:    true,
-				Description: "The code of the organization the user belongs to.",
+				Optional:            true,
+				Description:         "The code of an organization to add the user to when the user is created. Changing it later has no effect; use kinde_organization_user to manage memberships.",
+				MarkdownDescription: "The code of an organization to add the user to when the user is created. Changing it later has no effect; use `kinde_organization_user` to manage memberships.",
 			},
 			"created_on": schema.StringAttribute{
-				Description: "The timestamp when the user was created.",
-				Computed:    true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
-			"updated_on": schema.StringAttribute{
-				Description: "The timestamp when the user was last updated.",
+				Description: "When the user was created, as Kinde reports it (ISO 8601).",
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -98,7 +105,7 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "The value of the identity.",
+							Description: "The value of the identity. Give phone numbers in international format, such as +61412345678.",
 							Required:    true,
 						},
 					},
@@ -113,21 +120,20 @@ func (r *UserResource) Configure(_ context.Context, req resource.ConfigureReques
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Users
+	r.client = pd.api
 }
 
 func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	tflog.Debug(ctx, "Starting user creation")
 
 	var plan UserResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Check if is_suspended is set to true on create, which is not allowed
-	if !plan.IsSuspended.IsNull() && plan.IsSuspended.ValueBool() {
+	// Kinde cannot create a suspended user.
+	if plan.IsSuspended.ValueBool() {
 		resp.Diagnostics.AddError(
 			"Invalid Configuration",
 			"Setting is_suspended=true when creating a user is not supported. Create the user first, then update the is_suspended attribute.",
@@ -135,39 +141,12 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	// Validate that at least one email identity is provided
-	var identities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
-	diags = plan.Identities.ElementsAs(ctx, &identities, false)
-	resp.Diagnostics.Append(diags...)
+	var identities []userIdentityModel
+	resp.Diagnostics.Append(plan.Identities.ElementsAs(ctx, &identities, false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	hasEmail := false
-	var createIdentities []users.Identity
-	for _, identity := range identities {
-		if identity.Type == string(users.IdentityTypeEmail) {
-			hasEmail = true
-		}
-		details := make(map[string]string)
-		switch identity.Type {
-		case string(users.IdentityTypeEmail):
-			details["email"] = identity.Value
-		case string(users.IdentityTypeUsername):
-			details["username"] = identity.Value
-		case string(users.IdentityTypePhone):
-			details["phone"] = identity.Value
-		}
-		createIdentities = append(createIdentities, users.Identity{
-			Type:    identity.Type,
-			Details: details,
-		})
-	}
-
-	if !hasEmail {
+	if !hasEmailIdentity(identities) {
 		resp.Diagnostics.AddError(
 			"Missing Email Identity",
 			"At least one email identity must be provided for the user.",
@@ -175,27 +154,18 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	// Initialize empty profile
-	profile := users.Profile{}
-
-	// Only set first_name if it's not null
-	if !plan.FirstName.IsNull() {
-		profile.GivenName = plan.FirstName.ValueString()
+	createReq := mgmt.CreateUserReq{
+		Profile: mgmt.NewOptCreateUserReqProfile(mgmt.CreateUserReqProfile{
+			GivenName:  optString(plan.FirstName),
+			FamilyName: optString(plan.LastName),
+		}),
+		OrganizationCode: optString(plan.OrganizationCode),
+	}
+	for _, identity := range identities {
+		createReq.Identities = append(createReq.Identities, newCreateUserIdentity(identity))
 	}
 
-	// Only set last_name if it's not null
-	if !plan.LastName.IsNull() {
-		profile.FamilyName = plan.LastName.ValueString()
-	}
-
-	// Create user with profile and identities
-	createParams := users.CreateParams{
-		Profile:    profile,
-		OrgCode:    plan.OrganizationCode.ValueString(),
-		Identities: createIdentities,
-	}
-
-	user, err := r.client.Create(ctx, createParams)
+	created, err := r.client.CreateUser(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating User",
@@ -203,368 +173,117 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		)
 		return
 	}
+	id, ok := created.ID.Get()
+	if !ok {
+		resp.Diagnostics.AddError("Error Creating User", "Kinde did not return the new user's ID.")
+		return
+	}
+	plan.ID = types.StringValue(id)
 
-	// Get the final state of the user
-	user, err = r.client.Get(ctx, user.ID)
+	user, err := r.client.GetUserData(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Created User",
-			fmt.Sprintf("Could not read created user ID %s: %s", user.ID, err),
+			fmt.Sprintf("Could not read created user ID %s: %s", id, err),
 		)
 		return
 	}
-
-	// Get final identities
-	finalIdentities, err := r.client.GetIdentities(ctx, user.ID)
+	kindeIdentities, err := r.client.GetUserIdentities(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading User Identities",
-			fmt.Sprintf("Could not read identities for user %s: %s", user.ID, err),
+			fmt.Sprintf("Could not read identities for user %s: %s", id, err),
 		)
 		return
 	}
 
-	// Convert final identities to Terraform state format
-	var tfIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
-
-	// Create a map of planned identity values to types for reference
-	plannedIdentityTypes := make(map[string]string)
-	for _, identity := range identities {
-		plannedIdentityTypes[identity.Value] = identity.Type
-	}
-
-	for _, identity := range finalIdentities {
-		// Skip OAuth2 identities when storing in state
-		if strings.HasPrefix(identity.Type, "oauth2:") {
-			continue
-		}
-
-		// Use the type from plan if available, otherwise use API type
-		identityType := identity.Type
-		if plannedType, exists := plannedIdentityTypes[identity.Name]; exists {
-			identityType = plannedType
-		}
-
-		tfIdentities = append(tfIdentities, struct {
-			Type  string `tfsdk:"type"`
-			Value string `tfsdk:"value"`
-		}{
-			Type:  identityType,
-			Value: identity.Name,
-		})
-	}
-
-	// Sort identities consistently by type and then by value
-	sort.Slice(tfIdentities, func(i, j int) bool {
-		if tfIdentities[i].Type == tfIdentities[j].Type {
-			return tfIdentities[i].Value < tfIdentities[j].Value
-		}
-		return tfIdentities[i].Type < tfIdentities[j].Type
-	})
-
-	// Convert identities to set
-	identitiesSet, diags := types.SetValueFrom(ctx, types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"type":  types.StringType,
-			"value": types.StringType,
-		},
-	}, tfIdentities)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(plan.setFromKinde(ctx, user, kindeIdentities, identityTypes(identities))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// Set all fields from API response
-	plan.ID = types.StringValue(user.ID)
-
-	// Handle first_name: only set if it was in the plan
-	if !plan.FirstName.IsNull() {
-		plan.FirstName = types.StringValue(user.FirstName)
-	} else {
-		plan.FirstName = types.StringNull()
-	}
-
-	// Handle last_name: only set if it was in the plan
-	if !plan.LastName.IsNull() {
-		plan.LastName = types.StringValue(user.LastName)
-	} else {
-		plan.LastName = types.StringNull()
-	}
-
-	plan.CreatedOn = types.StringValue(user.CreatedOn.String())
-	plan.UpdatedOn = types.StringValue(user.UpdatedOn.String())
-	plan.Identities = identitiesSet
-
-	// Only set is_suspended in state if it was explicitly configured in the plan
-	if !plan.IsSuspended.IsNull() {
-		plan.IsSuspended = types.BoolValue(user.IsSuspended)
-	}
-
-	diags = resp.State.Set(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
 func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state UserResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	id := state.ID.ValueString()
 
-	user, err := r.client.Get(ctx, state.ID.ValueString())
+	user, err := r.client.GetUserData(ctx, id)
+	if kindeapi.IsNotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading User",
-			fmt.Sprintf("Could not read user ID %s: %s", state.ID.ValueString(), err),
+			fmt.Sprintf("Could not read user ID %s: %s", id, err),
 		)
 		return
 	}
-
-	// Get user identities
-	identities, err := r.client.GetIdentities(ctx, state.ID.ValueString())
+	kindeIdentities, err := r.client.GetUserIdentities(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading User Identities",
-			fmt.Sprintf("Could not read identities for user ID %s: %s", state.ID.ValueString(), err),
+			fmt.Sprintf("Could not read identities for user ID %s: %s", id, err),
 		)
 		return
 	}
 
-	// Convert identities to Terraform state
-	var tfIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
-
-	// If we have existing state identities, use them to preserve the types
-	var stateIdentitiesMap map[string]string
+	// Keep the types state already has; after an import there are none.
+	var stateIdentities []userIdentityModel
 	if !state.Identities.IsNull() {
-		stateIdentitiesMap = make(map[string]string)
-		var stateIdentities []struct {
-			Type  string `tfsdk:"type"`
-			Value string `tfsdk:"value"`
-		}
-		diags = state.Identities.ElementsAs(ctx, &stateIdentities, false)
-		resp.Diagnostics.Append(diags...)
+		resp.Diagnostics.Append(state.Identities.ElementsAs(ctx, &stateIdentities, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-
-		// Create a map of value -> type from state
-		for _, identity := range stateIdentities {
-			stateIdentitiesMap[identity.Value] = identity.Type
-		}
 	}
 
-	// Process API identities
-	for _, identity := range identities {
-		// Skip OAuth2 identities when storing in state
-		if strings.HasPrefix(identity.Type, "oauth2:") {
-			continue
-		}
-
-		// Use the type from state if available, otherwise use API type
-		identityType := identity.Type
-		if stateIdentitiesMap != nil {
-			if stateType, exists := stateIdentitiesMap[identity.Name]; exists {
-				identityType = stateType
-			}
-		}
-
-		tfIdentities = append(tfIdentities, struct {
-			Type  string `tfsdk:"type"`
-			Value string `tfsdk:"value"`
-		}{
-			Type:  identityType,
-			Value: identity.Name,
-		})
-	}
-
-	// Sort identities consistently by type and then by value
-	sort.Slice(tfIdentities, func(i, j int) bool {
-		if tfIdentities[i].Type == tfIdentities[j].Type {
-			return tfIdentities[i].Value < tfIdentities[j].Value
-		}
-		return tfIdentities[i].Type < tfIdentities[j].Type
-	})
-
-	// Update state with user data
-	state.ID = types.StringValue(user.ID)
-
-	// Handle first_name: only set if it was previously set in state
-	if !state.FirstName.IsNull() {
-		state.FirstName = types.StringValue(user.FirstName)
-	}
-
-	// Handle last_name: only set if it was previously set in state
-	if !state.LastName.IsNull() {
-		state.LastName = types.StringValue(user.LastName)
-	}
-
-	// Only set is_suspended in state if it was previously configured
-	if !state.IsSuspended.IsNull() {
-		state.IsSuspended = types.BoolValue(user.IsSuspended)
-	}
-
-	state.CreatedOn = types.StringValue(user.CreatedOn.String())
-	state.UpdatedOn = types.StringValue(user.UpdatedOn.String())
-
-	// Convert identities to set
-	identitiesSet, diags := types.SetValueFrom(ctx, types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"type":  types.StringType,
-			"value": types.StringType,
-		},
-	}, tfIdentities)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(state.setFromKinde(ctx, user, kindeIdentities, identityTypes(stateIdentities))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	state.Identities = identitiesSet
-
-	// Set state
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	tflog.Debug(ctx, "Starting user update")
 
 	var plan, state UserResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	diags = req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	// Check if first_name was previously set and is now being omitted or set to empty
-	if !state.FirstName.IsNull() && (plan.FirstName.IsNull() || plan.FirstName.ValueString() == "") {
+	if !state.FirstName.IsNull() && plan.FirstName.ValueString() == "" {
 		resp.Diagnostics.AddError(
 			"Cannot Reset First Name",
 			"The Kinde API does not allow resetting first_name once it has been set. Please provide the existing first_name value in your configuration.",
 		)
 	}
-
 	// Check if last_name was previously set and is now being omitted or set to empty
-	if !state.LastName.IsNull() && (plan.LastName.IsNull() || plan.LastName.ValueString() == "") {
+	if !state.LastName.IsNull() && plan.LastName.ValueString() == "" {
 		resp.Diagnostics.AddError(
 			"Cannot Reset Last Name",
 			"The Kinde API does not allow resetting last_name once it has been set. Please provide the existing last_name value in your configuration.",
 		)
 	}
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Get the user
-	_, err := r.client.Get(ctx, plan.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Reading User",
-			fmt.Sprintf("Could not read user ID %s: %s", plan.ID.ValueString(), err),
-		)
-		return
-	}
-
-	// Always initialize empty update params
-	updateParams := users.UpdateParams{}
-
-	// Only set FirstName if it's not null and not empty
-	if !plan.FirstName.IsNull() && plan.FirstName.ValueString() != "" {
-		firstName := plan.FirstName.ValueString()
-		updateParams.GivenName = firstName
-	} else {
-		// Preserve existing first_name from state
-		updateParams.GivenName = state.FirstName.ValueString()
-	}
-
-	// Only set LastName if it's not null and not empty
-	if !plan.LastName.IsNull() && plan.LastName.ValueString() != "" {
-		lastName := plan.LastName.ValueString()
-		updateParams.FamilyName = lastName
-	} else {
-		// Preserve existing last_name from state
-		updateParams.FamilyName = state.LastName.ValueString()
-	}
-
-	// Only include is_suspended in update if it's explicitly configured
-	if !plan.IsSuspended.IsNull() {
-		isSuspended := plan.IsSuspended.ValueBool()
-		updateParams.IsSuspended = &isSuspended
-	}
-
-	_, err = r.client.Update(ctx, plan.ID.ValueString(), updateParams)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Updating User",
-			fmt.Sprintf("Could not update user ID %s: %s", plan.ID.ValueString(), err),
-		)
-		return
-	}
-
-	// Get current identities from the API to identify OAuth2 identities
-	currentIdentities, err := r.client.GetIdentities(ctx, plan.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Reading User Identities",
-			fmt.Sprintf("Could not read identities for user %s: %s", plan.ID.ValueString(), err),
-		)
-		return
-	}
-
-	// Extract OAuth2 identities to preserve (we won't add them to state, but we need to avoid removing them)
-	var oauth2Identities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
-	for _, identity := range currentIdentities {
-		if strings.HasPrefix(identity.Type, "oauth2:") {
-			oauth2Identities = append(oauth2Identities, struct {
-				Type  string `tfsdk:"type"`
-				Value string `tfsdk:"value"`
-			}{
-				Type:  identity.Type,
-				Value: identity.Name,
-			})
-		}
-	}
-
-	// Get planned identities
-	var plannedIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
-	diags = plan.Identities.ElementsAs(ctx, &plannedIdentities, false)
-	resp.Diagnostics.Append(diags...)
+	var planned, current []userIdentityModel
+	resp.Diagnostics.Append(plan.Identities.ElementsAs(ctx, &planned, false)...)
+	resp.Diagnostics.Append(state.Identities.ElementsAs(ctx, &current, false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// For validation and identity management, we need to consider OAuth identities
-	// but we won't include them in the final state
-	allIdentities := append(plannedIdentities, oauth2Identities...)
-
-	// Validate that at least one email identity is provided
-	hasEmail := false
-	for _, identity := range allIdentities {
-		if identity.Type == string(users.IdentityTypeEmail) {
-			hasEmail = true
-			break
-		}
-	}
-
-	if !hasEmail {
+	if !hasEmailIdentity(planned) {
 		resp.Diagnostics.AddError(
 			"Missing Email Identity",
 			"At least one email identity must be provided for the user.",
@@ -572,169 +291,86 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	// Get current state identities for comparison
-	existingIdentities := make(map[string]bool)
-	var stateIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
+	id := plan.ID.ValueString()
+	updateReq := mgmt.UpdateUserReq{
+		GivenName:  optString(plan.FirstName),
+		FamilyName: optString(plan.LastName),
 	}
-	diags = state.Identities.ElementsAs(ctx, &stateIdentities, false)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	// Only send is_suspended when it is configured.
+	if !plan.IsSuspended.IsNull() {
+		updateReq.IsSuspended = mgmt.NewOptBool(plan.IsSuspended.ValueBool())
+	}
+	if _, err := r.client.UpdateUser(ctx, id, updateReq); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Updating User",
+			fmt.Sprintf("Could not update user ID %s: %s", id, err),
+		)
 		return
 	}
-	for _, identity := range stateIdentities {
-		key := identity.Type + ":" + identity.Value
-		existingIdentities[key] = true
-	}
 
-	// Also mark OAuth identities as existing so we don't try to add them again
-	for _, identity := range oauth2Identities {
-		key := identity.Type + ":" + identity.Value
-		existingIdentities[key] = true
-	}
-
-	for _, identity := range plannedIdentities {
-		// Skip OAuth2 identities as they are managed externally
-		if strings.HasPrefix(identity.Type, "oauth2:") {
+	// Add identities that are new in the plan. OAuth2 identities belong to
+	// Kinde, and identities removed from the configuration stay in Kinde.
+	for _, identity := range planned {
+		if isOAuth2Identity(identity.Type) || slices.Contains(current, identity) {
 			continue
 		}
-
-		key := identity.Type + ":" + identity.Value
-		if !existingIdentities[key] {
-			addIdentityParams := users.AddIdentityParams{
-				Type:  users.IdentityType(identity.Type),
-				Value: identity.Value,
-			}
-
-			_, err := r.client.AddIdentity(ctx, plan.ID.ValueString(), addIdentityParams)
-			if err != nil {
-				resp.Diagnostics.AddError(
-					"Error Adding User Identity",
-					fmt.Sprintf("Could not add identity to user %s: %s", plan.ID.ValueString(), err),
-				)
-				return
-			}
+		_, err := r.client.CreateUserIdentity(ctx, id, mgmt.CreateUserIdentityReq{
+			Type:  mgmt.NewOptCreateUserIdentityReqType(mgmt.CreateUserIdentityReqType(identity.Type)),
+			Value: mgmt.NewOptString(identity.Value),
+		})
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error Adding User Identity",
+				fmt.Sprintf("Could not add identity to user %s: %s", id, err),
+			)
+			return
 		}
 	}
 
-	// Get final state of the user
-	user, err := r.client.Get(ctx, plan.ID.ValueString())
+	user, err := r.client.GetUserData(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Updated User",
-			fmt.Sprintf("Could not read updated user %s: %s", plan.ID.ValueString(), err),
+			fmt.Sprintf("Could not read updated user %s: %s", id, err),
 		)
 		return
 	}
-
-	// Get final identities
-	finalIdentities, err := r.client.GetIdentities(ctx, plan.ID.ValueString())
+	kindeIdentities, err := r.client.GetUserIdentities(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading User Identities",
-			fmt.Sprintf("Could not read identities for user %s: %s", plan.ID.ValueString(), err),
+			fmt.Sprintf("Could not read identities for user %s: %s", id, err),
 		)
 		return
 	}
 
-	// Convert final identities to Terraform state format, excluding OAuth2 identities
-	var tfIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
-
-	// Create a map of planned identity values to types for reference
-	plannedIdentityTypes := make(map[string]string)
-	for _, identity := range plannedIdentities {
-		plannedIdentityTypes[identity.Value] = identity.Type
-	}
-
-	for _, identity := range finalIdentities {
-		// Skip OAuth2 identities when storing in state
-		if strings.HasPrefix(identity.Type, "oauth2:") {
-			continue
-		}
-
-		// Use the type from plan if available, otherwise use API type
-		identityType := identity.Type
-		if plannedType, exists := plannedIdentityTypes[identity.Name]; exists {
-			identityType = plannedType
-		}
-
-		tfIdentities = append(tfIdentities, struct {
-			Type  string `tfsdk:"type"`
-			Value string `tfsdk:"value"`
-		}{
-			Type:  identityType,
-			Value: identity.Name,
-		})
-	}
-
-	// Sort identities consistently by type and then by value
-	sort.Slice(tfIdentities, func(i, j int) bool {
-		if tfIdentities[i].Type == tfIdentities[j].Type {
-			return tfIdentities[i].Value < tfIdentities[j].Value
-		}
-		return tfIdentities[i].Type < tfIdentities[j].Type
-	})
-
-	// Convert identities to set
-	identitiesSet, diags := types.SetValueFrom(ctx, types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"type":  types.StringType,
-			"value": types.StringType,
-		},
-	}, tfIdentities)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(plan.setFromKinde(ctx, user, kindeIdentities, identityTypes(planned))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// Update plan with final state
-	plan.Identities = identitiesSet
-
-	// Only set name fields in state if they were in the plan
-	// This ensures that omitted fields stay omitted
-	if !plan.FirstName.IsNull() {
-		plan.FirstName = types.StringValue(user.FirstName)
-	}
-	if !plan.LastName.IsNull() {
-		plan.LastName = types.StringValue(user.LastName)
-	}
-
-	// Only set is_suspended in state if it was explicitly configured
-	if !plan.IsSuspended.IsNull() {
-		plan.IsSuspended = types.BoolValue(user.IsSuspended)
-	}
-
-	plan.CreatedOn = types.StringValue(user.CreatedOn.String())
-	plan.UpdatedOn = types.StringValue(user.UpdatedOn.String())
-
-	diags = resp.State.Set(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
 func (r *UserResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state UserResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if err := r.client.Delete(ctx, state.ID.ValueString()); err != nil {
+	err := r.client.DeleteUser(ctx, state.ID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting User",
 			fmt.Sprintf("Could not delete user ID %s: %s", state.ID.ValueString(), err),
 		)
-		return
 	}
 }
 
+// ImportState sets the ID and names. Read, which Terraform calls next, fills
+// in created_on and identities; it keeps names only when they are set.
 func (r *UserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Get the user by ID
-	user, err := r.client.Get(ctx, req.ID)
+	user, err := r.client.GetUserData(ctx, req.ID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading User",
@@ -743,48 +379,92 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 		return
 	}
 
-	// Get user identities
-	identities, err := r.client.GetIdentities(ctx, req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Reading User Identities",
-			fmt.Sprintf("Could not read identities for user %s: %s", req.ID, err),
-		)
-		return
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("first_name"), user.FirstName.Value)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("last_name"), user.LastName.Value)...)
+}
+
+// setFromKinde copies Kinde's view of the user into m. first_name, last_name,
+// and is_suspended stay null when they are null in m, so settings left out of
+// the configuration never show up as drift. knownTypes maps an identity value
+// to the type the plan or state gave it.
+func (m *UserResourceModel) setFromKinde(ctx context.Context, user *mgmt.User, identities []kindeapi.UserIdentity, knownTypes map[string]string) diag.Diagnostics {
+	if !m.FirstName.IsNull() {
+		m.FirstName = types.StringValue(user.FirstName.Value)
+	}
+	if !m.LastName.IsNull() {
+		m.LastName = types.StringValue(user.LastName.Value)
+	}
+	if !m.IsSuspended.IsNull() {
+		m.IsSuspended = types.BoolValue(user.IsSuspended.Value)
+	}
+	if createdOn, ok := user.CreatedOn.Get(); ok {
+		m.CreatedOn = types.StringValue(createdOn)
+	} else {
+		m.CreatedOn = types.StringNull()
 	}
 
-	// Convert identities to Terraform state format
-	var tfIdentities []struct {
-		Type  string `tfsdk:"type"`
-		Value string `tfsdk:"value"`
-	}
+	var diags diag.Diagnostics
+	m.Identities, diags = userIdentitiesValue(ctx, identities, knownTypes)
+	return diags
+}
+
+// userIdentitiesValue converts Kinde's identities to the identities
+// attribute. It leaves out OAuth2 identities. An identity whose value is in
+// knownTypes keeps the type given there instead of Kinde's.
+func userIdentitiesValue(ctx context.Context, identities []kindeapi.UserIdentity, knownTypes map[string]string) (types.Set, diag.Diagnostics) {
+	elems := make([]userIdentityModel, 0, len(identities))
 	for _, identity := range identities {
-		tfIdentities = append(tfIdentities, struct {
-			Type  string `tfsdk:"type"`
-			Value string `tfsdk:"value"`
-		}{
-			Type:  identity.Type,
-			Value: identity.Name,
-		})
+		if isOAuth2Identity(identity.Type) {
+			continue
+		}
+		typ := identity.Type
+		if known, ok := knownTypes[identity.Name]; ok {
+			typ = known
+		}
+		elems = append(elems, userIdentityModel{Type: typ, Value: identity.Name})
 	}
+	return types.SetValueFrom(ctx, userIdentityObjectType, elems)
+}
 
-	// Convert identities to set
-	identitiesSet, diags := types.SetValueFrom(ctx, types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"type":  types.StringType,
-			"value": types.StringType,
-		},
-	}, tfIdentities)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
+// isOAuth2Identity reports whether an identity type, such as "oauth2:google",
+// is one Kinde adds when the user signs in with a social connection. The
+// provider leaves these out of state and never adds them.
+func isOAuth2Identity(identityType string) bool {
+	return strings.HasPrefix(identityType, "oauth2:")
+}
+
+// hasEmailIdentity reports whether identities include an email identity.
+func hasEmailIdentity(identities []userIdentityModel) bool {
+	return slices.ContainsFunc(identities, func(i userIdentityModel) bool {
+		return i.Type == string(mgmt.CreateUserReqIdentitiesItemTypeEmail)
+	})
+}
+
+// identityTypes maps each identity's value to its type.
+func identityTypes(identities []userIdentityModel) map[string]string {
+	byValue := make(map[string]string, len(identities))
+	for _, identity := range identities {
+		byValue[identity.Value] = identity.Type
 	}
+	return byValue
+}
 
-	// Set all fields in state
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), user.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("first_name"), user.FirstName)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("last_name"), user.LastName)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("created_on"), user.CreatedOn.String())...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("updated_on"), user.UpdatedOn.String())...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("identities"), identitiesSet)...)
+// newCreateUserIdentity converts a configured identity for CreateUser. Kinde
+// creates email, phone, and username identities this way; a phone value
+// keeps its international format.
+func newCreateUserIdentity(identity userIdentityModel) mgmt.CreateUserReqIdentitiesItem {
+	var details mgmt.CreateUserReqIdentitiesItemDetails
+	switch mgmt.CreateUserReqIdentitiesItemType(identity.Type) {
+	case mgmt.CreateUserReqIdentitiesItemTypeEmail:
+		details.Email = mgmt.NewOptString(identity.Value)
+	case mgmt.CreateUserReqIdentitiesItemTypePhone:
+		details.Phone = mgmt.NewOptString(identity.Value)
+	case mgmt.CreateUserReqIdentitiesItemTypeUsername:
+		details.Username = mgmt.NewOptString(identity.Value)
+	}
+	return mgmt.CreateUserReqIdentitiesItem{
+		Type:    mgmt.NewOptCreateUserReqIdentitiesItemType(mgmt.CreateUserReqIdentitiesItemType(identity.Type)),
+		Details: mgmt.NewOptCreateUserReqIdentitiesItemDetails(details),
+	}
 }
