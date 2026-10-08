@@ -15,6 +15,9 @@ import (
 	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
 )
 
+// createdOn is the timestamp the fake reports for every object it creates.
+const createdOn = "2026-01-01T00:00:00Z"
+
 // Fake is a running fake Kinde. Create one with New.
 type Fake struct {
 	// URL is the fake's base URL. Use it as the provider's domain.
@@ -34,11 +37,12 @@ type Fake struct {
 	pageLimit     int
 
 	// Domain state.
-	applications map[string]*application
-	connections  map[string]*connection
-	apis         map[string]*apiResource
-	permissions  map[string]mgmt.Permissions
-	roles        map[string]*role
+	organizations map[string]*organization
+	applications  map[string]*application
+	connections   map[string]*connection
+	apis          map[string]*apiResource
+	permissions   map[string]mgmt.Permissions
+	roles         map[string]*role
 }
 
 // New starts a fake Kinde that shuts down when the test ends.
@@ -50,6 +54,7 @@ func New(t testing.TB) *Fake {
 		token:        "kindefake-token",
 	}
 	// Initialize domain state.
+	f.organizations = map[string]*organization{}
 	f.applications = map[string]*application{}
 	f.connections = builtinConnections()
 	f.apis = map[string]*apiResource{}
