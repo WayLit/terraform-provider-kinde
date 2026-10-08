@@ -86,6 +86,14 @@ make testacc
 
 Acceptance tests need the `terraform` CLI on your `PATH`, or `TF_ACC_TERRAFORM_PATH` pointing at a `terraform` or `tofu` binary. They never contact a real Kinde business.
 
+### Documentation
+
+The registry docs in `docs/` are generated from the schemas, `examples/`, and `templates/`. After changing any of them, regenerate the docs; CI fails if the committed docs differ:
+
+```sh
+cd tools && go generate ./...
+```
+
 ### Contributing
 
 1. Fork the repository
