@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -14,7 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/organizations"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -27,7 +28,7 @@ func NewUserRoleResource() resource.Resource {
 }
 
 type UserRoleResource struct {
-	client *organizations.Client
+	client *kindeapi.Client
 }
 
 type UserRoleResourceModel struct {
@@ -75,26 +76,25 @@ func (r *UserRoleResource) Configure(_ context.Context, req resource.ConfigureRe
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Organizations
+	r.client = pd.api
 }
 
 func (r *UserRoleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan UserRoleResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	code, userID, roleID := plan.OrganizationCode.ValueString(), plan.UserID.ValueString(), plan.RoleID.ValueString()
 
-	// Check if user has any roles in the organization (this verifies membership)
-	_, err := r.client.GetUserRoles(ctx, plan.OrganizationCode.ValueString(), plan.UserID.ValueString())
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "user_not_in_organization") {
+	// Listing the user's roles in the organization verifies membership.
+	if _, err := r.client.GetOrganizationUserRoles(ctx, code, userID); err != nil {
+		if kindeapi.HasCode(err, userNotInOrganization) {
 			resp.Diagnostics.AddError(
 				"User Not in Organization",
 				fmt.Sprintf("User %s is not a member of organization %s. Please add the user to the organization before assigning roles.",
-					plan.UserID.ValueString(),
-					plan.OrganizationCode.ValueString(),
+					userID,
+					code,
 				),
 			)
 			return
@@ -102,46 +102,44 @@ func (r *UserRoleResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError(
 			"Error Checking User Organization Membership",
 			fmt.Sprintf("Could not verify if user %s is a member of organization %s: %s",
-				plan.UserID.ValueString(),
-				plan.OrganizationCode.ValueString(),
+				userID,
+				code,
 				err,
 			),
 		)
 		return
 	}
 
-	// Assign role to user
-	err = r.client.AddUserRole(ctx, plan.OrganizationCode.ValueString(), plan.UserID.ValueString(), plan.RoleID.ValueString())
-	if err != nil {
+	if err := r.client.CreateOrganizationUserRole(ctx, code, userID, roleID); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Assigning Role to User",
 			fmt.Sprintf("Could not assign role %s to user %s in organization %s: %s",
-				plan.RoleID.ValueString(),
-				plan.UserID.ValueString(),
-				plan.OrganizationCode.ValueString(),
+				roleID,
+				userID,
+				code,
 				err,
 			),
 		)
 		return
 	}
 
-	// Generate a composite ID
-	plan.ID = types.StringValue(fmt.Sprintf("%s:%s:%s", plan.OrganizationCode.ValueString(), plan.UserID.ValueString(), plan.RoleID.ValueString()))
-
-	diags = resp.State.Set(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	plan.ID = types.StringValue(fmt.Sprintf("%s:%s:%s", code, userID, roleID))
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *UserRoleResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state UserRoleResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Get user's roles
-	userRoles, err := r.client.GetUserRoles(ctx, state.OrganizationCode.ValueString(), state.UserID.ValueString())
+	roles, err := r.client.GetOrganizationUserRoles(ctx, state.OrganizationCode.ValueString(), state.UserID.ValueString())
+	// A user who left the organization holds none of its roles.
+	if membershipGone(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading User Roles",
@@ -154,22 +152,12 @@ func (r *UserRoleResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	// Check if the role is still assigned
-	roleFound := false
-	for _, role := range userRoles {
-		if role.ID == state.RoleID.ValueString() {
-			roleFound = true
-			break
-		}
-	}
-
-	if !roleFound {
+	if !slices.Contains(organizationUserRoleIDs(roles), state.RoleID.ValueString()) {
 		resp.State.RemoveResource(ctx)
 		return
 	}
 
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *UserRoleResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -182,14 +170,13 @@ func (r *UserRoleResource) Update(ctx context.Context, req resource.UpdateReques
 
 func (r *UserRoleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state UserRoleResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	err := r.client.RemoveUserRole(ctx, state.OrganizationCode.ValueString(), state.UserID.ValueString(), state.RoleID.ValueString())
-	if err != nil {
+	err := r.client.DeleteOrganizationUserRole(ctx, state.OrganizationCode.ValueString(), state.UserID.ValueString(), state.RoleID.ValueString())
+	if err != nil && !membershipGone(err) {
 		resp.Diagnostics.AddError(
 			"Error Removing Role from User",
 			fmt.Sprintf("Could not remove role %s from user %s in organization %s: %s",
@@ -199,7 +186,6 @@ func (r *UserRoleResource) Delete(ctx context.Context, req resource.DeleteReques
 				err,
 			),
 		)
-		return
 	}
 }
 
