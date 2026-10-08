@@ -5,8 +5,10 @@ package kindefake
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -28,8 +30,12 @@ type Fake struct {
 	mu            sync.Mutex
 	tokenRequests int
 	throttle      int
+	nextID        int
+	pageLimit     int
 
 	// Domain state.
+	permissions map[string]mgmt.Permissions
+	roles       map[string]*role
 }
 
 // New starts a fake Kinde that shuts down when the test ends.
@@ -41,6 +47,8 @@ func New(t testing.TB) *Fake {
 		token:        "kindefake-token",
 	}
 	// Initialize domain state.
+	f.permissions = map[string]mgmt.Permissions{}
+	f.roles = map[string]*role{}
 
 	api, err := mgmt.NewServer(handler{f: f}, security{f: f},
 		mgmt.WithErrorHandler(writeError),
@@ -117,4 +125,51 @@ func (f *Fake) serveToken(w http.ResponseWriter, r *http.Request) {
 		"token_type":   "bearer",
 		"expires_in":   3600,
 	})
+}
+
+// newID returns a unique ID such as "perm_0001". Callers must hold f.mu.
+func (f *Fake) newID(prefix string) string {
+	f.nextID++
+	return fmt.Sprintf("%s_%04d", prefix, f.nextID)
+}
+
+// LimitPageSize makes next_token-paginated lists return at most n items per
+// page, whatever page_size the client asks for, so tests can cross page
+// boundaries with a few objects. Zero removes the limit.
+func (f *Fake) LimitPageSize(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pageLimit = n
+}
+
+// defaultPageSize is the page size Kinde's spec documents for requests that
+// do not send page_size.
+const defaultPageSize = 10
+
+// nextTokenPage returns the page of items that nextToken points at, and the
+// token for the page after it, or "" on the last page. Tokens are offsets
+// into items, so callers must pass items in a stable order. Callers must hold
+// f.mu.
+func nextTokenPage[T any](f *Fake, items []T, pageSize mgmt.OptNilInt, nextToken mgmt.OptNilString) ([]T, string, error) {
+	size := pageSize.Or(defaultPageSize)
+	if size < 1 {
+		size = defaultPageSize
+	}
+	if f.pageLimit > 0 {
+		size = min(size, f.pageLimit)
+	}
+	start := 0
+	if token := nextToken.Or(""); token != "" {
+		n, err := strconv.Atoi(token)
+		if err != nil || n < 0 || n > len(items) {
+			return nil, "", &apiError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "kindefake: invalid next_token " + strconv.Quote(token)}
+		}
+		start = n
+	}
+	end := min(start+size, len(items))
+	next := ""
+	if end < len(items) {
+		next = strconv.Itoa(end)
+	}
+	return items[start:end], next, nil
 }
