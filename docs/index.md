@@ -13,10 +13,10 @@ The Kinde provider is used to interact with [Kinde Identity Platform](https://ki
 
 ```terraform
 provider "kinde" {
-  domain        = "https://example.kinde.com"  # Also configurable via KINDE_DOMAIN
-  audience      = "https://example.kinde.com/api"  # Also configurable via KINDE_AUDIENCE
-  client_id     = "your_client_id"  # Also configurable via KINDE_CLIENT_ID
-  client_secret = "your_client_secret"  # Also configurable via KINDE_CLIENT_SECRET
+  domain        = "https://example.kinde.com"     # Also configurable via KINDE_DOMAIN
+  audience      = "https://example.kinde.com/api" # Also configurable via KINDE_AUDIENCE
+  client_id     = "your_client_id"                # Also configurable via KINDE_CLIENT_ID
+  client_secret = "your_client_secret"            # Also configurable via KINDE_CLIENT_SECRET
 }
 ```
 
@@ -25,7 +25,7 @@ provider "kinde" {
 
 ### Optional
 
-- `audience` (String) Kinde M2M application audience, also set by KINDE_AUDIENCE
+- `audience` (String) Kinde M2M application audience, also set by KINDE_AUDIENCE. Defaults to `<domain>/api`.
 - `client_id` (String) Kinde M2M application client id, also set by KINDE_CLIENT_ID
-- `client_secret` (String) Kinde M2M application client secret, also set by KINDE_CLIENT_SECRET
+- `client_secret` (String, Sensitive) Kinde M2M application client secret, also set by KINDE_CLIENT_SECRET
 - `domain` (String) Kinde organisation domain, also set by KINDE_DOMAIN 
