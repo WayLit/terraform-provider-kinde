@@ -35,6 +35,7 @@ type Fake struct {
 
 	// Domain state.
 	permissions map[string]mgmt.Permissions
+	roles       map[string]*role
 }
 
 // New starts a fake Kinde that shuts down when the test ends.
@@ -47,6 +48,7 @@ func New(t testing.TB) *Fake {
 	}
 	// Initialize domain state.
 	f.permissions = map[string]mgmt.Permissions{}
+	f.roles = map[string]*role{}
 
 	api, err := mgmt.NewServer(handler{f: f}, security{f: f},
 		mgmt.WithErrorHandler(writeError),
