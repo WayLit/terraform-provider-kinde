@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
 	"golang.org/x/oauth2"
@@ -41,6 +42,11 @@ func (c Config) withEnv() Config {
 	}
 	return c
 }
+
+// tokenTimeout bounds one token request. Token requests cannot use the
+// caller's context, so without it a stalled token endpoint would hang the
+// Terraform operation.
+var tokenTimeout = 30 * time.Second
 
 // Client calls the Kinde management API.
 type Client struct {
@@ -75,8 +81,10 @@ func New(cfg Config) (*Client, error) {
 		AuthStyle:      oauth2.AuthStyleInParams,
 	}
 	// The token source outlives the RPC that configured the provider, so it
-	// must not be bound to that RPC's context.
-	tokens := cc.TokenSource(context.Background())
+	// must not be bound to that RPC's context. Its HTTP client bounds each
+	// token request instead.
+	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: tokenTimeout})
+	tokens := cc.TokenSource(tokenCtx)
 
 	httpClient := &http.Client{Transport: captureTransport{next: retryTransport{
 		next:    http.DefaultTransport,
