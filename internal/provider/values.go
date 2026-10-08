@@ -22,3 +22,12 @@ func optString(v types.String) mgmt.OptString {
 	}
 	return mgmt.NewOptString(v.ValueString())
 }
+
+// boolValue converts an optional SDK bool to a Terraform bool. Unset becomes
+// null.
+func boolValue(v mgmt.OptBool) types.Bool {
+	if b, ok := v.Get(); ok {
+		return types.BoolValue(b)
+	}
+	return types.BoolNull()
+}

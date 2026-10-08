@@ -9,7 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/nxt-fwd/kinde-go/api/apis"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var _ datasource.DataSource = (*APIDataSource)(nil)
@@ -19,7 +19,7 @@ func NewAPIDataSource() datasource.DataSource {
 }
 
 type APIDataSource struct {
-	client *apis.Client
+	client *kindeapi.Client
 }
 
 func (d *APIDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -52,7 +52,7 @@ func (d *APIDataSource) Configure(ctx context.Context, req datasource.ConfigureR
 	if pd == nil {
 		return
 	}
-	d.client = pd.legacy.APIs
+	d.client = pd.api
 }
 
 func (d *APIDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
@@ -61,19 +61,15 @@ func (d *APIDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		return
 	}
 
-	resource := expandAPIDataSourceModel(config)
+	id := config.ID.ValueString()
+	tflog.Debug(ctx, "Reading API", map[string]any{"id": id})
 
-	tflog.Debug(ctx, "Reading API", map[string]any{"id": resource.ID})
-
-	resource, err := d.client.Get(ctx, resource.ID)
+	api, err := getAPI(ctx, d.client, id)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to get API", err.Error())
 		return
 	}
 
-	tflog.Debug(ctx, "Read API", map[string]any{"resource": resource})
-
-	state := flattenAPIDataSource(resource)
-
+	state := flattenAPIDataSource(api)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

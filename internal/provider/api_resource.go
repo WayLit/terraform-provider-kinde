@@ -12,7 +12,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
-	"github.com/nxt-fwd/kinde-go/api/apis"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -25,7 +26,7 @@ func NewAPIResource() resource.Resource {
 }
 
 type APIResource struct {
-	client *apis.Client
+	client *kindeapi.Client
 }
 
 func (r *APIResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -53,7 +54,7 @@ func (r *APIResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"is_management_api": schema.BoolAttribute{
-				MarkdownDescription: "Whether this API is a management API",
+				MarkdownDescription: "Whether this API is the Kinde management API",
 				Computed:            true,
 			},
 		},
@@ -65,24 +66,20 @@ func (r *APIResource) Configure(ctx context.Context, req resource.ConfigureReque
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.APIs
+	r.client = pd.api
 }
 
 func (r *APIResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan APIResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	api := expandAPIResourceModel(plan)
-	createParams := apis.CreateParams{
-		Name:     api.Name,
-		Audience: api.Audience,
-	}
-
-	createdAPI, err := r.client.Create(ctx, createParams)
+	created, err := r.client.AddAPIs(ctx, &mgmt.AddAPIsReq{
+		Name:     plan.Name.ValueString(),
+		Audience: plan.Audience.ValueString(),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating API",
@@ -90,32 +87,39 @@ func (r *APIResource) Create(ctx context.Context, req resource.CreateRequest, re
 		)
 		return
 	}
+	id, ok := created.API.Value.ID.Get()
+	if !ok || id == "" {
+		resp.Diagnostics.AddError("Error Creating API", "Kinde did not return the new API's ID.")
+		return
+	}
 
-	// Get the created API to populate computed fields
-	api, err = r.client.Get(ctx, createdAPI.ID)
+	// Kinde returns only the ID, so read the API back for the other fields.
+	api, err := getAPI(ctx, r.client, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading API",
-			fmt.Sprintf("Could not read API ID %s: %s", createdAPI.ID, err),
+			fmt.Sprintf("Could not read API ID %s: %s", id, err),
 		)
 		return
 	}
 
 	state := flattenAPIResource(api)
-	diags = resp.State.Set(ctx, state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *APIResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state APIResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	api, err := r.client.Get(ctx, state.ID.ValueString())
+	api, err := getAPI(ctx, r.client, state.ID.ValueString())
 	if err != nil {
+		if kindeapi.IsNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Error Reading API",
 			fmt.Sprintf("Could not read API ID %s: %s", state.ID.ValueString(), err),
@@ -124,8 +128,7 @@ func (r *APIResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 
 	state = flattenAPIResource(api)
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *APIResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -137,19 +140,17 @@ func (r *APIResource) Update(ctx context.Context, req resource.UpdateRequest, re
 
 func (r *APIResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state APIResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	err := r.client.Delete(ctx, state.ID.ValueString())
-	if err != nil {
+	err := r.client.DeleteAPI(ctx, state.ID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting API",
 			fmt.Sprintf("Could not delete API ID %s: %s", state.ID.ValueString(), err),
 		)
-		return
 	}
 }
 

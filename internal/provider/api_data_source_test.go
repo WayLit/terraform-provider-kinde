@@ -10,8 +10,8 @@ import (
 )
 
 func TestAccAPIDataSource(t *testing.T) {
+	testAccFake(t)
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -19,6 +19,7 @@ func TestAccAPIDataSource(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("data.kinde_api.test", "name", "Terraform Acceptance Test API"),
 					resource.TestCheckResourceAttr("data.kinde_api.test", "audience", "https://registry.terraform.io/providers/nxt-fwd/kinde"),
+					resource.TestCheckResourceAttrPair("data.kinde_api.test", "id", "kinde_api.test", "id"),
 				),
 			},
 		},

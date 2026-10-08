@@ -34,6 +34,7 @@ type Fake struct {
 	pageLimit     int
 
 	// Domain state.
+	apis        map[string]*apiResource
 	permissions map[string]mgmt.Permissions
 	roles       map[string]*role
 }
@@ -47,6 +48,7 @@ func New(t testing.TB) *Fake {
 		token:        "kindefake-token",
 	}
 	// Initialize domain state.
+	f.apis = map[string]*apiResource{}
 	f.permissions = map[string]mgmt.Permissions{}
 	f.roles = map[string]*role{}
 
