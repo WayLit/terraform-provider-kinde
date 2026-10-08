@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -33,6 +34,7 @@ type Fake struct {
 	mu            sync.Mutex
 	tokenRequests int
 	throttle      int
+	failures      map[string]*apiError
 	nextID        int
 	pageLimit     int
 
@@ -106,8 +108,35 @@ func (f *Fake) throttled(next http.Handler) http.Handler {
 			writeAPIError(w, &apiError{status: http.StatusTooManyRequests, code: "TOO_MANY_REQUESTS", message: "kindefake: throttled"})
 			return
 		}
+		if e := f.failure(r.URL.Path); e != nil {
+			writeAPIError(w, e)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// FailRequests makes every API request whose path ends with suffix answer
+// status with Kinde error code code, for the rest of the test. Tests use it
+// to break one call of an operation that makes several.
+func (f *Fake) FailRequests(suffix string, status int, code string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failures == nil {
+		f.failures = map[string]*apiError{}
+	}
+	f.failures[suffix] = &apiError{status: status, code: code, message: "kindefake: injected failure for *" + suffix}
+}
+
+func (f *Fake) failure(path string) *apiError {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for suffix, e := range f.failures {
+		if strings.HasSuffix(path, suffix) {
+			return e
+		}
+	}
+	return nil
 }
 
 func (f *Fake) takeThrottle() bool {

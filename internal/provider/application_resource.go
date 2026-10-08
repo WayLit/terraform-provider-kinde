@@ -171,6 +171,13 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 
 	id := state.ID.ValueString()
 	app, err := r.client.GetApplication(ctx, id)
+	// Only GetApplication's 404 means the application is gone. A 404 from the
+	// URL calls below is an error: dropping state there would make the next
+	// apply create a duplicate application.
+	if kindeapi.IsNotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	var logout *mgmt.LogoutRedirectUrls
 	if err == nil {
 		logout, err = r.client.GetLogoutURLs(ctx, id)
@@ -178,10 +185,6 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	var redirect *mgmt.RedirectCallbackUrls
 	if err == nil {
 		redirect, err = r.client.GetCallbackURLs(ctx, id)
-	}
-	if kindeapi.IsNotFound(err) {
-		resp.State.RemoveResource(ctx)
-		return
 	}
 	if err != nil {
 		resp.Diagnostics.AddError(
