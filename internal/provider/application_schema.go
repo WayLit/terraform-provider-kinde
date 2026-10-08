@@ -6,78 +6,11 @@ package provider
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go/api/applications"
-	"github.com/nxt-fwd/terraform-provider-kinde/internal/serde"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
 )
-
-type ApplicationResourceModel struct {
-	ID           types.String `tfsdk:"id"`
-	Name         types.String `tfsdk:"name"`
-	Type         types.String `tfsdk:"type"`
-	ClientID     types.String `tfsdk:"client_id"`
-	ClientSecret types.String `tfsdk:"client_secret"`
-	LoginURI     types.String `tfsdk:"login_uri"`
-	HomepageURI  types.String `tfsdk:"homepage_uri"`
-	LogoutURIs   types.List   `tfsdk:"logout_uris"`
-	RedirectURIs types.List   `tfsdk:"redirect_uris"`
-}
-
-//nolint:unused
-func expandApplicationResourceModel(data ApplicationResourceModel) applications.Application {
-	return applications.Application{
-		ID:           data.ID.ValueString(),
-		Name:         data.Name.ValueString(),
-		Type:         applications.Type(data.Type.ValueString()),
-		ClientID:     data.ClientID.ValueString(),
-		ClientSecret: data.ClientSecret.ValueString(),
-	}
-}
-
-//nolint:unused
-func expandApplicationUpdateResourceModel(ctx context.Context, data ApplicationResourceModel) applications.UpdateParams {
-	var logoutURIs []string
-	if !data.LogoutURIs.IsNull() {
-		data.LogoutURIs.ElementsAs(ctx, &logoutURIs, false)
-	}
-
-	var redirectURIs []string
-	if !data.RedirectURIs.IsNull() {
-		data.RedirectURIs.ElementsAs(ctx, &redirectURIs, false)
-	}
-
-	return applications.UpdateParams{
-		Name:         data.Name.ValueString(),
-		LoginURI:     data.LoginURI.ValueString(),
-		HomepageURI:  data.HomepageURI.ValueString(),
-		LogoutURIs:   logoutURIs,
-		RedirectURIs: redirectURIs,
-	}
-}
-
-//nolint:unused
-func flattenApplicationResource(ctx context.Context, resource *applications.Application, params applications.UpdateParams) (ApplicationResourceModel, diag.Diagnostics) {
-	model := ApplicationResourceModel{
-		ID:           types.StringValue(resource.ID),
-		Name:         types.StringValue(resource.Name),
-		Type:         types.StringValue(string(resource.Type)),
-		ClientID:     types.StringValue(resource.ClientID),
-		ClientSecret: types.StringValue(resource.ClientSecret),
-		LoginURI:     types.StringValue(params.LoginURI),
-		HomepageURI:  types.StringValue(params.HomepageURI),
-	}
-
-	var diags, nestedDiags diag.Diagnostics
-
-	model.LogoutURIs, nestedDiags = serde.FlattenStringList(ctx, params.LogoutURIs)
-	diags.Append(nestedDiags...)
-
-	model.RedirectURIs, nestedDiags = serde.FlattenStringList(ctx, params.RedirectURIs)
-	diags.Append(nestedDiags...)
-
-	return model, diags
-}
 
 type ApplicationDataSourceModel struct {
 	ID           types.String `tfsdk:"id"`
@@ -87,24 +20,61 @@ type ApplicationDataSourceModel struct {
 	ClientSecret types.String `tfsdk:"client_secret"`
 }
 
-//nolint:unused
-func expandApplicationDataSourceModel(model ApplicationDataSourceModel) *applications.Application {
-	return &applications.Application{
-		ID:           model.ID.ValueString(),
-		Name:         model.Name.ValueString(),
-		Type:         applications.Type(model.Type.ValueString()),
-		ClientID:     model.ClientID.ValueString(),
-		ClientSecret: model.ClientSecret.ValueString(),
+// applicationTypeValue converts an application type read from Kinde to a
+// Terraform string. Unset becomes null.
+func applicationTypeValue(v mgmt.OptGetApplicationResponseApplicationType) types.String {
+	if !v.Set {
+		return types.StringNull()
 	}
+	return types.StringValue(string(v.Value))
 }
 
-//nolint:unused
-func flattenApplicationDataSource(resource *applications.Application) ApplicationDataSourceModel {
-	return ApplicationDataSourceModel{
-		ID:           types.StringValue(resource.ID),
-		Name:         types.StringValue(resource.Name),
-		Type:         types.StringValue(string(resource.Type)),
-		ClientID:     types.StringValue(resource.ClientID),
-		ClientSecret: types.StringValue(resource.ClientSecret),
+// uriValue converts a login or homepage URI read from Kinde to a Terraform
+// string. Empty and unset both become null.
+func uriValue(v mgmt.OptString) types.String {
+	if v.Value == "" {
+		return types.StringNull()
 	}
+	return types.StringValue(v.Value)
+}
+
+// uriSetValue converts logout or redirect URIs read from Kinde to a set.
+// Kinde does not tell "no URIs" from an empty list, so no URIs stay an
+// empty set when prior is one and are null otherwise.
+func uriSetValue(ctx context.Context, uris []string, prior types.Set) (types.Set, diag.Diagnostics) {
+	if len(uris) > 0 {
+		return types.SetValueFrom(ctx, types.StringType, uris)
+	}
+	if prior.IsNull() || prior.IsUnknown() {
+		return types.SetNull(types.StringType), nil
+	}
+	return types.SetValueMust(types.StringType, []attr.Value{}), nil
+}
+
+// uriList returns the URIs in s for an update request. A null set gives an
+// empty list, which is still sent and clears the URIs in Kinde.
+func uriList(ctx context.Context, s types.Set) ([]string, diag.Diagnostics) {
+	uris := []string{}
+	if s.IsNull() {
+		return uris, nil
+	}
+	diags := s.ElementsAs(ctx, &uris, false)
+	return uris, diags
+}
+
+// expandApplicationUpdate builds the update request for m. It always sends
+// both URI lists, so Kinde ends up with exactly the configured URIs.
+func expandApplicationUpdate(ctx context.Context, m applicationResourceModel) (mgmt.UpdateApplicationReq, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	logoutURIs, d := uriList(ctx, m.LogoutURIs)
+	diags.Append(d...)
+	redirectURIs, d := uriList(ctx, m.RedirectURIs)
+	diags.Append(d...)
+	return mgmt.UpdateApplicationReq{
+		Name:         optString(m.Name),
+		LoginURI:     optString(m.LoginURI),
+		HomepageURI:  optString(m.HomepageURI),
+		LogoutUris:   logoutURIs,
+		RedirectUris: redirectURIs,
+	}, diags
 }

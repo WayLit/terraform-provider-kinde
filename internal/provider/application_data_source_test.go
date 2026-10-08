@@ -10,8 +10,8 @@ import (
 )
 
 func TestAccApplicationDataSource(t *testing.T) {
+	testAccFake(t)
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -29,6 +29,7 @@ func TestAccApplicationDataSource(t *testing.T) {
 					resource.TestCheckResourceAttrSet("data.kinde_application.test", "id"),
 					resource.TestCheckResourceAttr("data.kinde_application.test", "name", "Terraform Acceptance Example Application"),
 					resource.TestCheckResourceAttr("data.kinde_application.test", "type", "reg"),
+					resource.TestCheckResourceAttrPair("data.kinde_application.test", "client_id", "kinde_application.test", "client_id"),
 				),
 			},
 		},

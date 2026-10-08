@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -14,7 +15,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/nxt-fwd/kinde-go/api/applications"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -27,7 +29,7 @@ func NewApplicationResource() resource.Resource {
 }
 
 type ApplicationResource struct {
-	client *applications.Client
+	client *kindeapi.Client
 }
 
 type applicationResourceModel struct {
@@ -38,8 +40,8 @@ type applicationResourceModel struct {
 	ClientSecret types.String `tfsdk:"client_secret"`
 	LoginURI     types.String `tfsdk:"login_uri"`
 	HomepageURI  types.String `tfsdk:"homepage_uri"`
-	LogoutURIs   types.List   `tfsdk:"logout_uris"`
-	RedirectURIs types.List   `tfsdk:"redirect_uris"`
+	LogoutURIs   types.Set    `tfsdk:"logout_uris"`
+	RedirectURIs types.Set    `tfsdk:"redirect_uris"`
 }
 
 func (r *ApplicationResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -90,15 +92,15 @@ func (r *ApplicationResource) Schema(ctx context.Context, req resource.SchemaReq
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"logout_uris": schema.ListAttribute{
-				Description: "The logout URIs of the application.",
-				Optional:    true,
-				ElementType: types.StringType,
+			"logout_uris": schema.SetAttribute{
+				MarkdownDescription: "The logout URIs of the application. They are read from Kinde, so changes made outside Terraform show as drift. Set to `[]` or remove the attribute to clear them.",
+				Optional:            true,
+				ElementType:         types.StringType,
 			},
-			"redirect_uris": schema.ListAttribute{
-				Description: "The redirect URIs of the application.",
-				Optional:    true,
-				ElementType: types.StringType,
+			"redirect_uris": schema.SetAttribute{
+				MarkdownDescription: "The redirect (callback) URIs of the application. They are read from Kinde, so changes made outside Terraform show as drift. Set to `[]` or remove the attribute to clear them.",
+				Optional:            true,
+				ElementType:         types.StringType,
 			},
 		},
 	}
@@ -109,26 +111,21 @@ func (r *ApplicationResource) Configure(ctx context.Context, req resource.Config
 	if pd == nil {
 		return
 	}
-	r.client = pd.legacy.Applications
+	r.client = pd.api
 	tflog.Debug(ctx, "Application resource configured")
 }
 
 func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan applicationResourceModel
-
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Create application with required fields
-	createParams := applications.CreateParams{
+	created, err := r.client.CreateApplication(ctx, &mgmt.CreateApplicationReq{
 		Name: plan.Name.ValueString(),
-		Type: applications.Type(plan.Type.ValueString()),
-	}
-
-	app, err := r.client.Create(ctx, createParams)
+		Type: mgmt.CreateApplicationReqType(plan.Type.ValueString()),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Application",
@@ -136,193 +133,122 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 		)
 		return
 	}
-
-	// Set all values from application data
-	plan.ID = types.StringValue(app.ID)
-	plan.ClientID = types.StringValue(app.ClientID)
-	plan.ClientSecret = types.StringValue(app.ClientSecret)
-
-	// Update the application with optional settings if provided
-	var logoutURIs []string
-	if !plan.LogoutURIs.IsNull() {
-		diags = plan.LogoutURIs.ElementsAs(ctx, &logoutURIs, false)
-		resp.Diagnostics.Append(diags...)
-	}
-
-	var redirectURIs []string
-	if !plan.RedirectURIs.IsNull() {
-		diags = plan.RedirectURIs.ElementsAs(ctx, &redirectURIs, false)
-		resp.Diagnostics.Append(diags...)
-	}
-
-	if resp.Diagnostics.HasError() {
+	app, ok := created.Application.Get()
+	if !ok || app.ID.Value == "" {
+		resp.Diagnostics.AddError("Error Creating Application", "Kinde did not return the new application's ID.")
 		return
 	}
+	plan.ID = stringValue(app.ID)
+	plan.ClientID = stringValue(app.ClientID)
+	plan.ClientSecret = stringValue(app.ClientSecret)
 
-	// Only update if any of the optional fields are set
-	if !plan.LoginURI.IsNull() || !plan.HomepageURI.IsNull() || len(logoutURIs) > 0 || len(redirectURIs) > 0 {
-		tflog.Debug(ctx, "Updating application with additional settings", map[string]interface{}{
-			"id":             app.ID,
-			"has_login":      !plan.LoginURI.IsNull(),
-			"has_homepage":   !plan.HomepageURI.IsNull(),
-			"logout_count":   len(logoutURIs),
-			"redirect_count": len(redirectURIs),
-		})
-
-		updateParams := applications.UpdateParams{
-			LoginURI:     plan.LoginURI.ValueString(),
-			HomepageURI:  plan.HomepageURI.ValueString(),
-			LogoutURIs:   logoutURIs,
-			RedirectURIs: redirectURIs,
+	// Kinde creates an application from its name and type only; the URIs
+	// need a second call.
+	if !plan.LoginURI.IsNull() || !plan.HomepageURI.IsNull() || !plan.LogoutURIs.IsNull() || !plan.RedirectURIs.IsNull() {
+		update, diags := expandApplicationUpdate(ctx, plan)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
 		}
-
-		err = r.client.Update(ctx, app.ID, updateParams)
-		if err != nil {
+		if err := r.client.UpdateApplication(ctx, app.ID.Value, update); err != nil {
 			resp.Diagnostics.AddError(
 				"Error Updating Application",
-				fmt.Sprintf("Could not update application ID %s: %s", app.ID, err),
+				fmt.Sprintf("Could not update application ID %s: %s", app.ID.Value, err),
 			)
 			return
 		}
-
-		tflog.Debug(ctx, "Application updated successfully")
 	}
 
-	diags = resp.State.Set(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
-
-	tflog.Debug(ctx, "Application creation completed")
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state applicationResourceModel
-	diags := req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	id := state.ID.ValueString()
+	app, err := r.client.GetApplication(ctx, id)
+	var logout *mgmt.LogoutRedirectUrls
+	if err == nil {
+		logout, err = r.client.GetLogoutURLs(ctx, id)
+	}
+	var redirect *mgmt.RedirectCallbackUrls
+	if err == nil {
+		redirect, err = r.client.GetCallbackURLs(ctx, id)
+	}
+	if kindeapi.IsNotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Application",
+			fmt.Sprintf("Could not read application ID %s: %s", id, err),
+		)
+		return
+	}
+
+	a := app.Application.Value
+	state.Name = stringValue(a.Name)
+	state.Type = applicationTypeValue(a.Type)
+	state.ClientID = stringValue(a.ClientID)
+	state.ClientSecret = stringValue(a.ClientSecret)
+	state.LoginURI = uriValue(a.LoginURI)
+	state.HomepageURI = uriValue(a.HomepageURI)
+
+	var diags diag.Diagnostics
+	state.LogoutURIs, diags = uriSetValue(ctx, logout.LogoutUrls, state.LogoutURIs)
+	resp.Diagnostics.Append(diags...)
+	state.RedirectURIs, diags = uriSetValue(ctx, redirect.RedirectUrls, state.RedirectURIs)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	app, err := r.client.Get(ctx, state.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Reading Application",
-			fmt.Sprintf("Could not read application ID %s: %s", state.ID.ValueString(), err),
-		)
-		return
-	}
-
-	// Set all values from application data
-	state.ID = types.StringValue(app.ID)
-	state.Name = types.StringValue(app.Name)
-	state.Type = types.StringValue(string(app.Type))
-	state.ClientID = types.StringValue(app.ClientID)
-	state.ClientSecret = types.StringValue(app.ClientSecret)
-
-	// Set optional values
-	if app.LoginURI != "" {
-		state.LoginURI = types.StringValue(app.LoginURI)
-	} else {
-		state.LoginURI = types.StringNull()
-	}
-
-	if app.HomepageURI != "" {
-		state.HomepageURI = types.StringValue(app.HomepageURI)
-	} else {
-		state.HomepageURI = types.StringNull()
-	}
-
-	// Handle URI lists
-	// Keep logout and redirect URIs from state as they are not returned by the API
-	if state.LogoutURIs.IsNull() {
-		state.LogoutURIs = types.ListNull(types.StringType)
-	}
-	if state.RedirectURIs.IsNull() {
-		state.RedirectURIs = types.ListNull(types.StringType)
-	}
-
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan applicationResourceModel
-	var state applicationResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
-	diags = req.State.Get(ctx, &state)
+	update, diags := expandApplicationUpdate(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Update basic settings if changed
-	var logoutURIs []string
-	if !plan.LogoutURIs.IsNull() {
-		diags = plan.LogoutURIs.ElementsAs(ctx, &logoutURIs, false)
-		resp.Diagnostics.Append(diags...)
-	}
-
-	var redirectURIs []string
-	if !plan.RedirectURIs.IsNull() {
-		diags = plan.RedirectURIs.ElementsAs(ctx, &redirectURIs, false)
-		resp.Diagnostics.Append(diags...)
-	}
-
-	if resp.Diagnostics.HasError() {
+	id := plan.ID.ValueString()
+	if err := r.client.UpdateApplication(ctx, id, update); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Updating Application",
+			fmt.Sprintf("Could not update application ID %s: %s", id, err),
+		)
 		return
 	}
 
-	// Only update if any of the optional fields are set
-	if true { // Always update to ensure name changes are applied
-		tflog.Debug(ctx, "Updating application settings", map[string]interface{}{
-			"id":             plan.ID.ValueString(),
-			"name":           plan.Name.ValueString(),
-			"has_login":      !plan.LoginURI.IsNull(),
-			"has_homepage":   !plan.HomepageURI.IsNull(),
-			"logout_count":   len(logoutURIs),
-			"redirect_count": len(redirectURIs),
-		})
-
-		updateParams := applications.UpdateParams{
-			Name:         plan.Name.ValueString(), // Ensure name is included in update params
-			LoginURI:     plan.LoginURI.ValueString(),
-			HomepageURI:  plan.HomepageURI.ValueString(),
-			LogoutURIs:   logoutURIs,
-			RedirectURIs: redirectURIs,
-		}
-
-		err := r.client.Update(ctx, plan.ID.ValueString(), updateParams)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error Updating Application",
-				fmt.Sprintf("Could not update application ID %s: %s", plan.ID.ValueString(), err),
-			)
-			return
-		}
-
-		tflog.Debug(ctx, "Application settings updated successfully")
-	}
-
-	diags = resp.State.Set(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ApplicationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state applicationResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	err := r.client.Delete(ctx, state.ID.ValueString())
-	if err != nil {
+	err := r.client.DeleteApplication(ctx, state.ID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting Application",
 			fmt.Sprintf("Could not delete application ID %s: %s", state.ID.ValueString(), err),
 		)
-		return
 	}
 }
 
