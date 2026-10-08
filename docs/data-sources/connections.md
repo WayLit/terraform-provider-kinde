@@ -3,12 +3,12 @@
 page_title: "kinde_connections Data Source - kinde"
 subcategory: ""
 description: |-
-  Use this data source to list available connections.
+  Use this data source to list every connection in the business, including the built-in ones.
 ---
 
 # kinde_connections (Data Source)
 
-Use this data source to list available connections.
+Use this data source to list every connection in the business, including the built-in ones.
 
 
 

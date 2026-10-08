@@ -24,8 +24,8 @@ Applications facilitates the interface for users to authenticate against. See [d
 
 - `homepage_uri` (String) The homepage URI of the application.
 - `login_uri` (String) The login URI of the application.
-- `logout_uris` (List of String) The logout URIs of the application.
-- `redirect_uris` (List of String) The redirect URIs of the application.
+- `logout_uris` (Set of String) The logout URIs of the application. They are read from Kinde, so changes made outside Terraform show as drift. Set to `[]` or remove the attribute to clear them.
+- `redirect_uris` (Set of String) The redirect (callback) URIs of the application. They are read from Kinde, so changes made outside Terraform show as drift. Set to `[]` or remove the attribute to clear them.
 
 ### Read-Only
 

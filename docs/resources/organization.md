@@ -21,16 +21,16 @@ Manages a Kinde organization.
 
 ### Optional
 
-- `background_color` (String) The background color of the organization's theme.
-- `button_color` (String) The button color of the organization's theme.
-- `button_text_color` (String) The button text color of the organization's theme.
+- `background_color` (String) The background color of the organization's theme, as a hex code such as `#ffffff`.
+- `button_color` (String) The button color of the organization's theme, as a hex code such as `#0056f1`.
+- `button_text_color` (String) The button text color of the organization's theme, as a hex code such as `#ffffff`.
 - `external_id` (String) The external ID of the organization.
 - `handle` (String) The organization handle.
-- `link_color` (String) The link color of the organization's theme.
-- `theme_code` (String) The theme code of the organization.
+- `link_color` (String) The link color of the organization's theme, as a hex code such as `#0056f1`.
+- `theme_code` (String) Whether the organization's pages use light mode, dark mode, or the user's preference: `light`, `dark`, or `user_preference`. Kinde chooses a default when this is not set.
 
 ### Read-Only
 
 - `code` (String) The organization code.
-- `created_on` (String) The timestamp when the organization was created.
+- `created_on` (String) When the organization was created, in ISO 8601 format as Kinde returns it.
 - `id` (String) The unique identifier of the organization.

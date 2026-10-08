@@ -12,7 +12,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go"
 	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
@@ -90,22 +89,7 @@ func (p *KindeProvider) Configure(ctx context.Context, req provider.ConfigureReq
 		return
 	}
 
-	opts := kinde.NewClientOptions()
-	if !data.Domain.IsNull() && !data.Domain.IsUnknown() {
-		opts.WithDomain(data.Domain.ValueString())
-	}
-	if !data.Audience.IsNull() && !data.Audience.IsUnknown() {
-		opts.WithAudience(data.Audience.ValueString())
-	}
-	if !data.ClientID.IsNull() && !data.ClientID.IsUnknown() {
-		opts.WithClientID(data.ClientID.ValueString())
-	}
-	if !data.ClientSecret.IsNull() && !data.ClientSecret.IsUnknown() {
-		opts.WithClientSecret(data.ClientSecret.ValueString())
-	}
-	legacy := kinde.New(ctx, opts)
-
-	pd := &providerData{api: client, legacy: &legacy}
+	pd := &providerData{api: client}
 	resp.DataSourceData = pd
 	resp.ResourceData = pd
 }
