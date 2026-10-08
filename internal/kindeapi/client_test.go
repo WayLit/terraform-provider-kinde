@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // tokenServer is a minimal Kinde: a token endpoint that accepts client ID
@@ -168,6 +169,33 @@ func TestTokenIsRefreshedWhenExpired(t *testing.T) {
 	}
 	if got := k.tokens.Load(); got != 2 {
 		t.Fatalf("token requests = %d, want 2", got)
+	}
+}
+
+func TestTokenRequestsTimeOut(t *testing.T) {
+	clearKindeEnv(t)
+	defer func(d time.Duration) { tokenTimeout = d }(tokenTimeout)
+	tokenTimeout = 50 * time.Millisecond
+	stall := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-stall:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(stall) })
+
+	c := mustNew(t, Config{Domain: srv.URL, ClientID: "id", ClientSecret: "secret"})
+	done := make(chan error, 1)
+	go func() { done <- c.CheckCredentials() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error from a stalled token endpoint")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CheckCredentials still waiting on a stalled token endpoint")
 	}
 }
 
