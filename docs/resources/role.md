@@ -56,7 +56,7 @@ resource "kinde_role" "full_example" {
 ### Required
 
 - `description` (String) Description of the role. This field is required because the Kinde API does not properly handle unsetting or empty descriptions once they are set. To maintain consistent behavior and prevent state drift, we require a description for all roles.
-- `key` (String) Key identifier of the role
+- `key` (String) Key identifier of the role. Changing it updates the role in place.
 - `name` (String) Name of the role
 
 ### Optional
