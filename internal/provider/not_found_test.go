@@ -26,6 +26,7 @@ type notFoundCase struct {
 func TestReadRemovesMissingObjects(t *testing.T) {
 	tests := []notFoundCase{
 		// Each domain task adds its resources here as they move to kindeapi.
+		{name: "kinde_permission", resource: NewPermissionResource, attrs: map[string]string{"id": "perm_missing"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
