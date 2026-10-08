@@ -12,18 +12,28 @@ import (
 )
 
 func TestAccApplicationConnectionResource(t *testing.T) {
+	f := testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc")
+	config := testAccApplicationConnectionResourceConfig(testID)
+	var appID, connID string
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccApplicationConnectionResourceConfig(testID),
+				Config: config,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrPair("kinde_application_connection.test", "application_id", "kinde_application.test", "id"),
 					resource.TestCheckResourceAttrPair("kinde_application_connection.test", "connection_id", "kinde_connection.test", "id"),
+					resource.TestCheckResourceAttrWith("kinde_application_connection.test", "application_id", func(v string) error {
+						appID = v
+						return nil
+					}),
+					resource.TestCheckResourceAttrWith("kinde_application_connection.test", "connection_id", func(v string) error {
+						connID = v
+						return nil
+					}),
 				),
 			},
 			// ImportState testing
@@ -31,6 +41,18 @@ func TestAccApplicationConnectionResource(t *testing.T) {
 				ResourceName:      "kinde_application_connection.test",
 				ImportState:       true,
 				ImportStateVerify: true,
+			},
+			// Disabled outside Terraform: refresh drops it and the plan enables it again.
+			{
+				PreConfig:          func() { f.RemoveApplicationConnection(appID, connID) },
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			// Applying enables it again.
+			{
+				Config: config,
+				Check:  resource.TestCheckResourceAttrSet("kinde_application_connection.test", "id"),
 			},
 			// Delete testing automatically occurs in TestCase
 		},
