@@ -19,6 +19,8 @@ export KINDE_CLIENT_ID="your-client-id"
 export KINDE_CLIENT_SECRET="your-client-secret"
 ```
 
+The credentials belong to a Kinde machine-to-machine application. It needs the Management API scopes listed under [Required scopes](docs/index.md#required-scopes) for the resources you manage.
+
 ## Usage
 
 ```hcl
