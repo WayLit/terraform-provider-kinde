@@ -1,6 +1,6 @@
 # Migrate to the official Kinde Go SDK
 
-Status: design approved 2026-10-08, pending spec review.
+Status: approved 2026-10-08. Updated during planning: the user-identities fallback and the permission `description` change.
 
 ## Goal
 
@@ -107,6 +107,9 @@ because a 429 means Kinde did not process the request.
 - `ListConnections` and `ListApplicationConnections` call the API directly
   and decode the JSON shape the API actually returns. A comment links
   upstream PR #63; remove the fallback once a release includes the fix.
+- `GetUserIdentities` also calls the API directly. Kinde's spec allows a
+  `null` `is_confirmed` (username identities have one), but the SDK's type
+  is non-nullable, so the SDK fails to decode real responses.
 - `internal/provider/pagination.go` is deleted.
 - Phone parsing for phone identities moves from the old library into the
   adapter's `CreateUserIdentity`.
@@ -145,6 +148,7 @@ added.
 | `kinde_user` | `organization_code` takes effect on create | The old library sent it under the wrong field name |
 | `kinde_application` | Read `logout_uris` and `redirect_uris` from Kinde | Drift becomes visible and the URIs can be cleared |
 | `kinde_application` | `logout_uris` and `redirect_uris` become sets | Order is not meaningful and the API does not guarantee it |
+| `kinde_permission` | `description` becomes optional and computed; removing it keeps Kinde's value | Kinde keeps a description once set, so removing it failed with an inconsistent result |
 | `kinde_api` | Populate `is_management_api` | It is declared but never set |
 | `kinde_connections` | Return all connections | It currently stops at 10 |
 | all | Store `created_on` as Kinde returns it | No existing state needs the old formats |
