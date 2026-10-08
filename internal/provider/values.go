@@ -31,3 +31,12 @@ func boolValue(v mgmt.OptBool) types.Bool {
 	}
 	return types.BoolNull()
 }
+
+// nilStringValue converts an optional, nullable SDK string to a Terraform
+// string. Unset and null both become null.
+func nilStringValue(v mgmt.OptNilString) types.String {
+	if s, ok := v.Get(); ok {
+		return types.StringValue(s)
+	}
+	return types.StringNull()
+}

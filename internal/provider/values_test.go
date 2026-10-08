@@ -76,3 +76,25 @@ func TestBoolValue(t *testing.T) {
 		})
 	}
 }
+
+func TestNilStringValue(t *testing.T) {
+	var null mgmt.OptNilString
+	null.SetToNull()
+	tests := []struct {
+		name string
+		in   mgmt.OptNilString
+		want types.String
+	}{
+		{"unset", mgmt.OptNilString{}, types.StringNull()},
+		{"null", null, types.StringNull()},
+		{"empty", mgmt.NewOptNilString(""), types.StringValue("")},
+		{"value", mgmt.NewOptNilString("acme"), types.StringValue("acme")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nilStringValue(tt.in); !got.Equal(tt.want) {
+				t.Fatalf("nilStringValue(%+v) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
