@@ -46,23 +46,26 @@ jobs:
 
   generate:
     runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=github-releases depName=hashicorp/terraform
+      TERRAFORM_VERSION: 1.16.5
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
           go-version-file: 'go.mod'
           cache: true
-      # Temporarily download Terraform 1.8 prerelease for function documentation support.
-      # When Terraform 1.8.0 final is released, this can be removed.
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
-          terraform_version: '1.8.0-alpha20240216'
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+      # The generators live in the tools module, which ./... at the repository root skips.
       - run: go generate ./...
+        working-directory: tools
       - name: git diff
         run: |
           git diff --compact-summary --exit-code || \
-            (echo; echo "Unexpected difference in directories after code generation. Run 'go generate ./...' command and commit."; exit 1)
+            (echo; echo "Unexpected difference in directories after code generation. Run 'cd tools && go generate ./...' and commit."; exit 1)
 
   # Run acceptance tests in a matrix with Terraform CLI versions
   test:

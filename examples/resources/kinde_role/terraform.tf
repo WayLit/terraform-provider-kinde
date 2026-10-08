@@ -17,9 +17,9 @@ provider "kinde" {
 
 # Alternatively, configure the provider explicitly
 provider "kinde" {
-  alias        = "dev"
-  domain       = "https://your-org.kinde.com"
-  audience     = "https://your-org.kinde.com/api"
-  client_id    = "your_client_id"
+  alias         = "dev"
+  domain        = "https://your-org.kinde.com"
+  audience      = "https://your-org.kinde.com/api"
+  client_id     = "your_client_id"
   client_secret = "your_client_secret"
 } 
