@@ -36,6 +36,8 @@ func TestReadRemovesMissingObjects(t *testing.T) {
 		}},
 		{name: "kinde_organization", resource: NewOrganizationResource, attrs: map[string]string{"id": "org_missing", "code": "org_missing"}},
 		{name: "kinde_user", resource: NewUserResource, attrs: map[string]string{"id": "kp_missing"}},
+		{name: "kinde_organization_user", resource: NewOrganizationUserResource, attrs: map[string]string{"id": "org_missing:kp_missing", "organization_code": "org_missing", "user_id": "kp_missing"}},
+		{name: "kinde_user_role", resource: NewUserRoleResource, attrs: map[string]string{"id": "org_missing:kp_missing:rol_missing", "organization_code": "org_missing", "user_id": "kp_missing", "role_id": "rol_missing"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
