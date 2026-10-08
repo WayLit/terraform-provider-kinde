@@ -11,6 +11,9 @@ import (
 type organization struct {
 	// details is what GetOrganization returns.
 	details mgmt.GetOrganizationResponse
+	// users maps each member's user ID to the IDs of the roles they hold in
+	// the organization, in the order they were added.
+	users map[string][]string
 }
 
 // colorSchemes maps each theme code to the color scheme Kinde reports with
@@ -106,7 +109,7 @@ func (h handler) CreateOrganization(_ context.Context, req *mgmt.CreateOrganizat
 	defer h.f.mu.Unlock()
 	code := h.f.newID("org")
 	d.Code = mgmt.NewOptString(code)
-	h.f.organizations[code] = &organization{details: d}
+	h.f.organizations[code] = &organization{details: d, users: map[string][]string{}}
 	return &mgmt.CreateOrganizationResponse{
 		Code:    mgmt.NewOptString("OK"),
 		Message: mgmt.NewOptString("Organization successfully created"),
