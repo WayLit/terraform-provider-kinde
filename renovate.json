@@ -46,6 +46,18 @@
       "description": "golangci-lint separately (set via GOLANGCI_LINT_VERSION in test.yml): new releases add checks that can fail CI",
       "matchPackageNames": ["golangci/golangci-lint"],
       "groupName": "golangci-lint"
+    },
+    {
+      "description": "zizmor separately (action and the version it runs): new releases add audits that can fail CI",
+      "matchPackageNames": ["zizmorcore/zizmor-action", "ghcr.io/zizmorcore/zizmor"],
+      "groupName": "zizmor"
+    },
+    {
+      "description": "zizmor-action's version input takes a plain version (no digest), and ghcr.io has no release timestamps for the release-age wait",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/zizmorcore/zizmor"],
+      "pinDigests": false,
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
     }
   ]
 }
