@@ -2,7 +2,7 @@ module github.com/nxt-fwd/terraform-provider-kinde
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.27.2
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
