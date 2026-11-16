@@ -48,9 +48,10 @@
       "groupName": "golangci-lint"
     },
     {
-      "description": "zizmor separately (action and the version it runs): new releases add audits that can fail CI",
+      "description": "zizmor separately (action and the version it runs): new releases add audits that can fail CI. The action only runs zizmor versions it lists, so wait until both update together",
       "matchPackageNames": ["zizmorcore/zizmor-action", "ghcr.io/zizmorcore/zizmor"],
-      "groupName": "zizmor"
+      "groupName": "zizmor",
+      "minimumGroupSize": 2
     },
     {
       "description": "zizmor-action's version input takes a plain version (no digest), and ghcr.io has no release timestamps for the release-age wait",

@@ -13,6 +13,8 @@ permissions: {}
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    # The signing key is a secret of this environment, which only accepts v* tags.
+    environment: release
     # Releases need permissions to read and write the repository contents.
     # GitHub considers creating releases and uploading assets as writing contents.
     permissions:
@@ -28,6 +30,19 @@ jobs:
           go-version-file: 'go.mod'
           # Don't build release binaries from a cache that other workflows can write to.
           cache: false
+      # Imported with gpg directly; third-party import actions aren't on the enterprise allowlist.
+      - name: Import GPG key
+        id: import_gpg
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          fingerprint="$(gpg --batch --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')"
+          if [ -z "$fingerprint" ]; then
+            echo "::error::No secret key imported from GPG_PRIVATE_KEY"
+            exit 1
+          fi
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
@@ -35,3 +50,4 @@ jobs:
         env:
           # GitHub sets the GITHUB_TOKEN secret automatically.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
