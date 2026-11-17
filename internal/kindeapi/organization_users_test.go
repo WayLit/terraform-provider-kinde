@@ -95,6 +95,43 @@ func TestOrganizationUserRoundTrip(t *testing.T) {
 	requireNotInOrganization(t, c.CreateOrganizationUserRole(ctx, code, userID, "rol_admin"))
 }
 
+func TestOrganizationUserPermissionsRoundTrip(t *testing.T) {
+	_, c := newFakeClient(t)
+	ctx := t.Context()
+	code := createOrganization(t, c, &mgmt.CreateOrganizationReq{Name: "Permissions"})
+	userID := createUserForMembership(t, c)
+	_, err := c.GetOrganizationUserPermissions(ctx, code, userID)
+	requireNotInOrganization(t, err)
+	if err := c.AddOrganizationUsers(ctx, code, []string{userID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"perm_read", "perm_write", "perm_read"} {
+		if err := c.CreateOrganizationUserPermission(ctx, code, userID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	permissions, err := c.GetOrganizationUserPermissions(ctx, code, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(permissions) != 2 || permissions[0].ID.Value != "perm_read" || permissions[1].ID.Value != "perm_write" {
+		t.Fatalf("permissions = %+v, want read and write", permissions)
+	}
+	if err := c.DeleteOrganizationUserPermission(ctx, code, userID, "perm_read"); err != nil {
+		t.Fatal(err)
+	}
+	permissions, err = c.GetOrganizationUserPermissions(ctx, code, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(permissions) != 1 || permissions[0].ID.Value != "perm_write" {
+		t.Fatalf("permissions after delete = %+v", permissions)
+	}
+	if err := c.DeleteOrganizationUserPermission(ctx, code, userID, "perm_read"); !kindeapi.IsNotFound(err) {
+		t.Fatalf("deleting absent permission: %v", err)
+	}
+}
+
 func TestOrganizationUsersNeedExistingOrganizationAndUser(t *testing.T) {
 	_, c := newFakeClient(t)
 	ctx := t.Context()

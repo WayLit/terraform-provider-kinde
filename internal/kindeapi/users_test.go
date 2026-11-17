@@ -39,6 +39,31 @@ func identityNames(identities []kindeapi.UserIdentity) []string {
 	return names
 }
 
+func TestDeleteUserIdentity(t *testing.T) {
+	_, c := newFakeClient(t)
+	ctx := t.Context()
+	id := createUser(t, c, mgmt.CreateUserReq{Identities: []mgmt.CreateUserReqIdentitiesItem{
+		emailIdentity("before@example.com"), emailIdentity("after@example.com"),
+	}})
+	identities, err := c.GetUserIdentities(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteIdentity(ctx, identities[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := c.GetUserIdentities(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := identityNames(remaining); !slices.Equal(got, []string{"email:after@example.com"}) {
+		t.Fatalf("identities after deletion = %v", got)
+	}
+	if err := c.DeleteIdentity(ctx, identities[0].ID); !kindeapi.IsNotFound(err) {
+		t.Fatalf("deleting missing identity: got %v, want not found", err)
+	}
+}
+
 func TestUserRoundTrip(t *testing.T) {
 	f, c := newFakeClient(t)
 	ctx := t.Context()

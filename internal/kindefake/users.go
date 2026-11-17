@@ -214,6 +214,24 @@ func (h handler) CreateUserIdentity(_ context.Context, req mgmt.OptCreateUserIde
 	}, nil
 }
 
+func (h handler) DeleteIdentity(_ context.Context, params mgmt.DeleteIdentityParams) (mgmt.DeleteIdentityRes, error) {
+	h.f.mu.Lock()
+	defer h.f.mu.Unlock()
+	for _, u := range h.f.users {
+		index := slices.IndexFunc(u.identities, func(i identity) bool { return i.id == params.IdentityID })
+		if index < 0 {
+			continue
+		}
+		// Kinde requires a replacement before the last identity can be removed.
+		if len(u.identities) == 1 {
+			return nil, invalidUserRequest("cannot delete the last identity")
+		}
+		u.identities = slices.Delete(u.identities, index, index+1)
+		return success(), nil
+	}
+	return nil, notFound("IDENTITY_NOT_FOUND", "Identity not found")
+}
+
 // identityJSON is an identity as GET /api/v1/users/{user_id}/identities
 // returns it.
 type identityJSON struct {

@@ -69,7 +69,58 @@ func (h handler) RemoveOrganizationUser(_ context.Context, params mgmt.RemoveOrg
 		return nil, err
 	}
 	delete(org.users, params.UserID)
+	delete(org.userPermissions, params.UserID)
 	return &mgmt.SuccessResponse{Code: mgmt.NewOptString("OK"), Message: mgmt.NewOptString("User successfully removed")}, nil
+}
+
+func (h handler) GetOrganizationUserPermissions(_ context.Context, params mgmt.GetOrganizationUserPermissionsParams) (mgmt.GetOrganizationUserPermissionsRes, error) {
+	h.f.mu.Lock()
+	defer h.f.mu.Unlock()
+	org, err := h.f.member(params.OrgCode, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	permissions := make([]mgmt.OrganizationUserPermission, 0, len(org.userPermissions[params.UserID]))
+	for _, id := range org.userPermissions[params.UserID] {
+		permissions = append(permissions, mgmt.OrganizationUserPermission{ID: mgmt.NewOptString(id)})
+	}
+	return &mgmt.GetOrganizationsUserPermissionsResponse{Code: mgmt.NewOptString("OK"), Permissions: permissions}, nil
+}
+
+func (h handler) CreateOrganizationUserPermission(_ context.Context, req *mgmt.CreateOrganizationUserPermissionReq, params mgmt.CreateOrganizationUserPermissionParams) (mgmt.CreateOrganizationUserPermissionRes, error) {
+	h.f.mu.Lock()
+	defer h.f.mu.Unlock()
+	org, err := h.f.member(params.OrgCode, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	id, ok := req.PermissionID.Get()
+	if !ok || id == "" {
+		return nil, invalidUserRequest("permission_id is required")
+	}
+	if org.userPermissions == nil {
+		org.userPermissions = map[string][]string{}
+	}
+	if !slices.Contains(org.userPermissions[params.UserID], id) {
+		org.userPermissions[params.UserID] = append(org.userPermissions[params.UserID], id)
+	}
+	return success(), nil
+}
+
+func (h handler) DeleteOrganizationUserPermission(_ context.Context, params mgmt.DeleteOrganizationUserPermissionParams) (mgmt.DeleteOrganizationUserPermissionRes, error) {
+	h.f.mu.Lock()
+	defer h.f.mu.Unlock()
+	org, err := h.f.member(params.OrgCode, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	permissions := org.userPermissions[params.UserID]
+	index := slices.Index(permissions, params.PermissionID)
+	if index < 0 {
+		return nil, notFound("PERMISSION_NOT_FOUND", "The user does not have this permission")
+	}
+	org.userPermissions[params.UserID] = slices.Delete(permissions, index, index+1)
+	return success(), nil
 }
 
 // GetOrganizationUserRoles returns role IDs only. The fake does not look up

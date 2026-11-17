@@ -14,6 +14,8 @@ type organization struct {
 	// users maps each member's user ID to the IDs of the roles they hold in
 	// the organization, in the order they were added.
 	users map[string][]string
+	// userPermissions holds direct grants, separate from roles.
+	userPermissions map[string][]string
 }
 
 // colorSchemes maps each theme code to the color scheme Kinde reports with

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -67,7 +68,7 @@ func (r *OrganizationUserResource) Schema(_ context.Context, _ resource.SchemaRe
 			"permissions": schema.ListAttribute{
 				ElementType: types.StringType,
 				Optional:    true,
-				Description: "The list of permission IDs to assign to the user.",
+				Description: "The list of permission IDs to grant directly to the user. Permissions inherited through roles are managed by those roles. Kinde does not distinguish direct grants from inherited grants when both grant the same permission: import omits such overlapping grants, and refresh cannot detect their direct removal while the role still grants them.",
 			},
 		},
 	}
@@ -116,6 +117,10 @@ func (r *OrganizationUserResource) Create(ctx context.Context, req resource.Crea
 		}
 	}
 
+	resp.Diagnostics.Append(r.reconcilePermissions(ctx, code, userID, plan.Permissions, types.ListNull(types.StringType))...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	plan.ID = types.StringValue(fmt.Sprintf("%s:%s", code, userID))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -142,7 +147,7 @@ func (r *OrganizationUserResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	roleIDs := organizationUserRoleIDs(roles)
-	if len(roleIDs) > 0 {
+	if len(roleIDs) > 0 || !state.Roles.IsNull() {
 		rolesList, diags := types.ListValueFrom(ctx, types.StringType, roleIDs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -153,6 +158,22 @@ func (r *OrganizationUserResource) Read(ctx context.Context, req resource.ReadRe
 		state.Roles = types.ListNull(types.StringType)
 	}
 
+	permissions, err := r.client.GetOrganizationUserPermissions(ctx, state.OrganizationCode.ValueString(), state.UserID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error Reading Organization User Permissions", fmt.Sprintf("Could not read permissions: %s", err))
+		return
+	}
+	var prior []string
+	resp.Diagnostics.Append(state.Permissions.ElementsAs(ctx, &prior, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	permissionIDs := organizationUserPermissionIDs(permissions, prior)
+	if len(permissionIDs) > 0 || !state.Permissions.IsNull() {
+		list, diags := types.ListValueFrom(ctx, types.StringType, permissionIDs)
+		resp.Diagnostics.Append(diags...)
+		state.Permissions = list
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -212,7 +233,48 @@ func (r *OrganizationUserResource) Update(ctx context.Context, req resource.Upda
 		}
 	}
 
+	if !plan.Permissions.Equal(state.Permissions) {
+		resp.Diagnostics.Append(r.reconcilePermissions(ctx, state.OrganizationCode.ValueString(), state.UserID.ValueString(), plan.Permissions, state.Permissions)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *OrganizationUserResource) reconcilePermissions(ctx context.Context, code, userID string, desired, prior types.List) diag.Diagnostics {
+	var diags diag.Diagnostics
+	var desiredIDs, priorIDs []string
+	diags.Append(desired.ElementsAs(ctx, &desiredIDs, false)...)
+	diags.Append(prior.ElementsAs(ctx, &priorIDs, false)...)
+	if diags.HasError() {
+		return diags
+	}
+	permissions, err := r.client.GetOrganizationUserPermissions(ctx, code, userID)
+	if err != nil {
+		diags.AddError("Error Reading Organization User Permissions", fmt.Sprintf("Could not read permissions: %s", err))
+		return diags
+	}
+	current := organizationUserPermissionIDs(permissions, priorIDs)
+	for _, id := range current {
+		if slices.Contains(desiredIDs, id) {
+			continue
+		}
+		if err := r.client.DeleteOrganizationUserPermission(ctx, code, userID, id); err != nil && !kindeapi.IsNotFound(err) {
+			diags.AddError("Error Removing Permission", fmt.Sprintf("Could not remove permission %s: %s", id, err))
+			return diags
+		}
+	}
+	for _, id := range desiredIDs {
+		if slices.Contains(current, id) {
+			continue
+		}
+		if err := r.client.CreateOrganizationUserPermission(ctx, code, userID, id); err != nil {
+			diags.AddError("Error Adding Permission", fmt.Sprintf("Could not add permission %s: %s", id, err))
+			return diags
+		}
+	}
+	return diags
 }
 
 func (r *OrganizationUserResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

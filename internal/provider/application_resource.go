@@ -199,8 +199,8 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	state.Type = applicationTypeValue(a.Type)
 	state.ClientID = stringValue(a.ClientID)
 	state.ClientSecret = stringValue(a.ClientSecret)
-	state.LoginURI = uriValue(a.LoginURI)
-	state.HomepageURI = uriValue(a.HomepageURI)
+	state.LoginURI = uriValue(a.LoginURI, state.LoginURI)
+	state.HomepageURI = uriValue(a.HomepageURI, state.HomepageURI)
 
 	var diags diag.Diagnostics
 	state.LogoutURIs, diags = uriSetValue(ctx, logout.LogoutUrls, state.LogoutURIs)

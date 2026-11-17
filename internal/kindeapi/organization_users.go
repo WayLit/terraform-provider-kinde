@@ -60,3 +60,30 @@ func (c *Client) DeleteOrganizationUserRole(ctx context.Context, code, userID, r
 	})
 	return err
 }
+
+// GetOrganizationUserPermissions lists permissions, including their role sources.
+func (c *Client) GetOrganizationUserPermissions(ctx context.Context, code, userID string) ([]mgmt.OrganizationUserPermission, error) {
+	resp, err := call[*mgmt.GetOrganizationsUserPermissionsResponse](ctx, "GetOrganizationUserPermissions", func(ctx context.Context) (any, error) {
+		return c.api.GetOrganizationUserPermissions(ctx, mgmt.GetOrganizationUserPermissionsParams{OrgCode: code, UserID: userID, Expand: mgmt.NewOptNilString("roles")})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Permissions, nil
+}
+
+// CreateOrganizationUserPermission grants a permission directly to a member.
+func (c *Client) CreateOrganizationUserPermission(ctx context.Context, code, userID, permissionID string) error {
+	_, err := call[*mgmt.SuccessResponse](ctx, "CreateOrganizationUserPermission", func(ctx context.Context) (any, error) {
+		return c.api.CreateOrganizationUserPermission(ctx, &mgmt.CreateOrganizationUserPermissionReq{PermissionID: mgmt.NewOptString(permissionID)}, mgmt.CreateOrganizationUserPermissionParams{OrgCode: code, UserID: userID})
+	})
+	return err
+}
+
+// DeleteOrganizationUserPermission revokes a member's direct permission grant.
+func (c *Client) DeleteOrganizationUserPermission(ctx context.Context, code, userID, permissionID string) error {
+	_, err := call[*mgmt.SuccessResponse](ctx, "DeleteOrganizationUserPermission", func(ctx context.Context) (any, error) {
+		return c.api.DeleteOrganizationUserPermission(ctx, mgmt.DeleteOrganizationUserPermissionParams{OrgCode: code, UserID: userID, PermissionID: permissionID})
+	})
+	return err
+}

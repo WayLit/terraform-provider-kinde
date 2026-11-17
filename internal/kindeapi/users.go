@@ -56,6 +56,14 @@ func (c *Client) CreateUserIdentity(ctx context.Context, userID string, req mgmt
 	})
 }
 
+// DeleteIdentity removes an identity by its ID.
+func (c *Client) DeleteIdentity(ctx context.Context, identityID string) error {
+	_, err := call[*mgmt.SuccessResponse](ctx, "DeleteIdentity", func(ctx context.Context) (any, error) {
+		return c.api.DeleteIdentity(ctx, mgmt.DeleteIdentityParams{IdentityID: identityID})
+	})
+	return err
+}
+
 // UserIdentity is one of a user's identities.
 type UserIdentity struct {
 	ID string `json:"id"`

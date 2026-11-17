@@ -309,7 +309,8 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	// Add identities that are new in the plan. OAuth2 identities belong to
-	// Kinde, and identities removed from the configuration stay in Kinde.
+	// Kinde. Add replacements before deleting old identities so the user
+	// always retains a way to sign in.
 	for _, identity := range planned {
 		if isOAuth2Identity(identity.Type) || slices.Contains(current, identity) {
 			continue
@@ -323,6 +324,30 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 				"Error Adding User Identity",
 				fmt.Sprintf("Could not add identity to user %s: %s", id, err),
 			)
+			return
+		}
+	}
+
+	identities, err := r.client.GetUserIdentities(ctx, id)
+	if err != nil {
+		resp.Diagnostics.AddError("Error Reading User Identities", fmt.Sprintf("Could not read identities for user %s: %s", id, err))
+		return
+	}
+	knownTypes := identityTypes(current)
+	for _, identity := range identities {
+		if isOAuth2Identity(identity.Type) {
+			continue
+		}
+		// Keep the configured type aliases used by existing state.
+		typ := identity.Type
+		if known, ok := knownTypes[identity.Name]; ok {
+			typ = known
+		}
+		if slices.Contains(planned, userIdentityModel{Type: typ, Value: identity.Name}) {
+			continue
+		}
+		if err := r.client.DeleteIdentity(ctx, identity.ID); err != nil && !kindeapi.IsNotFound(err) {
+			resp.Diagnostics.AddError("Error Removing User Identity", fmt.Sprintf("Could not remove identity from user %s: %s", id, err))
 			return
 		}
 	}

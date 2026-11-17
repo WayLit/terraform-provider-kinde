@@ -30,9 +30,9 @@ func applicationTypeValue(v mgmt.OptGetApplicationResponseApplicationType) types
 }
 
 // uriValue converts a login or homepage URI read from Kinde to a Terraform
-// string. Empty and unset both become null.
-func uriValue(v mgmt.OptString) types.String {
-	if v.Value == "" {
+// string. Preserve an explicit empty string; otherwise no URI becomes null.
+func uriValue(v mgmt.OptString, prior types.String) types.String {
+	if v.Value == "" && (prior.IsNull() || prior.IsUnknown()) {
 		return types.StringNull()
 	}
 	return types.StringValue(v.Value)
@@ -72,8 +72,8 @@ func expandApplicationUpdate(ctx context.Context, m applicationResourceModel) (m
 	diags.Append(d...)
 	return mgmt.UpdateApplicationReq{
 		Name:         optString(m.Name),
-		LoginURI:     optString(m.LoginURI),
-		HomepageURI:  optString(m.HomepageURI),
+		LoginURI:     mgmt.NewOptString(m.LoginURI.ValueString()),
+		HomepageURI:  mgmt.NewOptString(m.HomepageURI.ValueString()),
 		LogoutUris:   logoutURIs,
 		RedirectUris: redirectURIs,
 	}, diags

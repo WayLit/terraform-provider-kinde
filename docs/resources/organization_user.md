@@ -69,7 +69,7 @@ resource "kinde_organization_user" "full_example" {
 
 ### Optional
 
-- `permissions` (List of String) The list of permission IDs to assign to the user.
+- `permissions` (List of String) The list of permission IDs to grant directly to the user. Permissions inherited through roles are managed by those roles. Kinde does not distinguish direct grants from inherited grants when both grant the same permission: import omits such overlapping grants, and refresh cannot detect their direct removal while the role still grants them.
 - `roles` (List of String) The list of role IDs to assign to the user.
 
 ### Read-Only
