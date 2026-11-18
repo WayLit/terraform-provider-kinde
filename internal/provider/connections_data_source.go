@@ -7,8 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go"
-	"github.com/nxt-fwd/kinde-go/api/connections"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var _ datasource.DataSource = &ConnectionsDataSource{}
@@ -18,7 +17,7 @@ func NewConnectionsDataSource() datasource.DataSource {
 }
 
 type ConnectionsDataSource struct {
-	client *connections.Client
+	client *kindeapi.Client
 }
 
 type ConnectionsDataSourceModel struct {
@@ -39,7 +38,7 @@ func (d *ConnectionsDataSource) Metadata(ctx context.Context, req datasource.Met
 
 func (d *ConnectionsDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Use this data source to list available connections.",
+		MarkdownDescription: "Use this data source to list every connection in the business, including the built-in ones.",
 
 		Attributes: map[string]schema.Attribute{
 			"filter": schema.StringAttribute{
@@ -70,29 +69,29 @@ func (d *ConnectionsDataSource) Schema(ctx context.Context, req datasource.Schem
 }
 
 func (d *ConnectionsDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	pd := providerDataFrom(req.ProviderData, &resp.Diagnostics)
+	if pd == nil {
 		return
 	}
-
-	client, ok := req.ProviderData.(*kinde.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *kinde.Client, got: %T. Please report this issue to the provider developers.", req.ProviderData),
-		)
-		return
-	}
-
-	d.client = client.Connections
+	d.client = pd.api
 }
+
+// Strategies of the built-in connections every Kinde business has.
+const (
+	strategyEmailPassword    = "email:password"
+	strategyEmailOTP         = "email:otp"
+	strategyPhoneOTP         = "phone:otp"
+	strategyUsernamePassword = "username:password"
+	strategyUsernameOTP      = "username:otp"
+)
 
 func isBuiltinStrategy(strategy string) bool {
 	switch strategy {
-	case string(connections.StrategyEmailPassword),
-		string(connections.StrategyEmailOTP),
-		string(connections.StrategyPhoneOTP),
-		string(connections.StrategyUsernamePassword),
-		string(connections.StrategyUsernameOTP):
+	case strategyEmailPassword,
+		strategyEmailOTP,
+		strategyPhoneOTP,
+		strategyUsernamePassword,
+		strategyUsernameOTP:
 		return true
 	default:
 		return false
@@ -108,7 +107,7 @@ func (d *ConnectionsDataSource) Read(ctx context.Context, req datasource.ReadReq
 	}
 
 	// Get all connections
-	conns, err := d.client.List(ctx)
+	conns, err := d.client.ListConnections(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read connections, got error: %s", err))
 		return
@@ -120,7 +119,7 @@ func (d *ConnectionsDataSource) Read(ctx context.Context, req datasource.ReadReq
 		filter = data.Filter.ValueString()
 	}
 
-	var filteredConns []connections.Connection
+	var filteredConns []kindeapi.Connection
 	switch filter {
 	case "builtin":
 		for _, conn := range conns {

@@ -16,14 +16,14 @@ Manages a user's membership and roles in a Kinde organization.
 # Basic organization user membership
 resource "kinde_organization_user" "basic" {
   organization_code = "org_123" # Replace with your organization code
-  user_id          = kinde_user.example.id
+  user_id           = kinde_user.example.id
 }
 
 # Organization user with roles
 resource "kinde_organization_user" "with_roles" {
   organization_code = "org_123" # Replace with your organization code
-  user_id          = kinde_user.example.id
-  roles            = [
+  user_id           = kinde_user.example.id
+  roles = [
     kinde_role.admin.id,
     kinde_role.viewer.id
   ]
@@ -32,8 +32,8 @@ resource "kinde_organization_user" "with_roles" {
 # Organization user with permissions
 resource "kinde_organization_user" "with_permissions" {
   organization_code = "org_123" # Replace with your organization code
-  user_id          = kinde_user.example.id
-  permissions      = [
+  user_id           = kinde_user.example.id
+  permissions = [
     kinde_permission.read_users.id,
     kinde_permission.write_users.id
   ]
@@ -53,9 +53,9 @@ resource "kinde_user" "example" {
 
 resource "kinde_organization_user" "full_example" {
   organization_code = "org_123" # Replace with your organization code
-  user_id          = kinde_user.example.id
-  roles            = [kinde_role.admin.id]
-  permissions      = [kinde_permission.read_users.id]
+  user_id           = kinde_user.example.id
+  roles             = [kinde_role.admin.id]
+  permissions       = [kinde_permission.read_users.id]
 }
 ```
 
@@ -69,7 +69,7 @@ resource "kinde_organization_user" "full_example" {
 
 ### Optional
 
-- `permissions` (List of String) The list of permission IDs to assign to the user.
+- `permissions` (List of String) The list of permission IDs to grant directly to the user. Permissions inherited through roles are managed by those roles. Kinde does not distinguish direct grants from inherited grants when both grant the same permission: import omits such overlapping grants, and refresh cannot detect their direct removal while the role still grants them.
 - `roles` (List of String) The list of role IDs to assign to the user.
 
 ### Read-Only

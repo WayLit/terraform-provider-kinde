@@ -7,14 +7,17 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccRoleResource(t *testing.T) {
+	f := testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-")
+	var roleID string
+	renamed := testAccRoleResourceConfigNewKey(testID)
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
@@ -24,7 +27,10 @@ func TestAccRoleResource(t *testing.T) {
 					resource.TestCheckResourceAttr("kinde_role.test", "name", testID),
 					resource.TestCheckResourceAttr("kinde_role.test", "key", testID),
 					resource.TestCheckResourceAttr("kinde_role.test", "description", "Test role"),
-					resource.TestCheckResourceAttrSet("kinde_role.test", "id"),
+					resource.TestCheckResourceAttrWith("kinde_role.test", "id", func(v string) error {
+						roleID = v
+						return nil
+					}),
 				),
 			},
 			// ImportState testing
@@ -40,17 +46,43 @@ func TestAccRoleResource(t *testing.T) {
 					resource.TestCheckResourceAttr("kinde_role.test", "name", testID+"-updated"),
 					resource.TestCheckResourceAttr("kinde_role.test", "key", testID),
 					resource.TestCheckResourceAttr("kinde_role.test", "description", "Updated test role"),
+					resource.TestCheckResourceAttrPtr("kinde_role.test", "id", &roleID),
 				),
+			},
+			// Changing the key updates the role in place.
+			{
+				Config: renamed,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("kinde_role.test", plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("kinde_role.test", "key", testID+"-renamed"),
+					resource.TestCheckResourceAttrPtr("kinde_role.test", "id", &roleID),
+				),
+			},
+			// Deleted outside Terraform: refresh drops it and the plan recreates it.
+			{
+				PreConfig:          func() { f.RemoveRole(roleID) },
+				Config:             renamed,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			// Applying recreates it.
+			{
+				Config: renamed,
+				Check:  resource.TestCheckResourceAttrSet("kinde_role.test", "id"),
 			},
 		},
 	})
 }
 
 func TestAccRoleResource_AddOnlyPermissionUpdate(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-role-add")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -70,10 +102,10 @@ func TestAccRoleResource_AddOnlyPermissionUpdate(t *testing.T) {
 }
 
 func TestAccRoleResource_MixedPermissionUpdate(t *testing.T) {
+	testAccFake(t)
 	testID := acctest.RandomWithPrefix("tfacc-role-mixed")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -95,10 +127,12 @@ func TestAccRoleResource_MixedPermissionUpdate(t *testing.T) {
 }
 
 func TestAccRoleResource_PermissionsPaginationBoundary(t *testing.T) {
+	f := testAccFake(t)
+	// With pages of 10, the eleventh permission is on the second page.
+	f.LimitPageSize(10)
 	testID := acctest.RandomWithPrefix("tfacc-role-page")
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -132,6 +166,16 @@ func testAccRoleResourceConfigUpdate(name string) string {
 resource "kinde_role" "test" {
 	name        = "%[1]s-updated"
 	key         = %[1]q
+	description = "Updated test role"
+}
+`, name)
+}
+
+func testAccRoleResourceConfigNewKey(name string) string {
+	return fmt.Sprintf(`
+resource "kinde_role" "test" {
+	name        = "%[1]s-updated"
+	key         = "%[1]s-renamed"
 	description = "Updated test role"
 }
 `, name)

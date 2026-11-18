@@ -12,8 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go"
-	"github.com/nxt-fwd/kinde-go/api/users"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 // Ensure KindeProvider satisfies various provider interfaces.
@@ -48,7 +47,7 @@ func (p *KindeProvider) Schema(ctx context.Context, req provider.SchemaRequest, 
 				Optional:            true,
 			},
 			"audience": schema.StringAttribute{
-				MarkdownDescription: "Kinde M2M application audience, also set by KINDE_AUDIENCE",
+				MarkdownDescription: "Kinde M2M application audience, also set by KINDE_AUDIENCE. Defaults to `<domain>/api`.",
 				Optional:            true,
 			},
 			"client_id": schema.StringAttribute{
@@ -58,6 +57,7 @@ func (p *KindeProvider) Schema(ctx context.Context, req provider.SchemaRequest, 
 			"client_secret": schema.StringAttribute{
 				MarkdownDescription: "Kinde M2M application client secret, also set by KINDE_CLIENT_SECRET",
 				Optional:            true,
+				Sensitive:           true,
 			},
 		},
 	}
@@ -71,28 +71,15 @@ func (p *KindeProvider) Configure(ctx context.Context, req provider.ConfigureReq
 		return
 	}
 
-	opts := kinde.NewClientOptions()
-
-	if !data.Domain.IsNull() && !data.Domain.IsUnknown() {
-		opts.WithDomain(data.Domain.ValueString())
+	client, err := kindeapi.New(kindeapi.Config{
+		Domain:       data.Domain.ValueString(),
+		Audience:     data.Audience.ValueString(),
+		ClientID:     data.ClientID.ValueString(),
+		ClientSecret: data.ClientSecret.ValueString(),
+	})
+	if err == nil {
+		err = client.CheckCredentials()
 	}
-
-	if !data.Audience.IsNull() && !data.Audience.IsUnknown() {
-		opts.WithAudience(data.Audience.ValueString())
-	}
-
-	if !data.ClientID.IsNull() && !data.ClientID.IsUnknown() {
-		opts.WithClientID(data.ClientID.ValueString())
-	}
-
-	if !data.ClientSecret.IsNull() && !data.ClientSecret.IsUnknown() {
-		opts.WithClientSecret(data.ClientSecret.ValueString())
-	}
-
-	client := kinde.New(ctx, opts)
-
-	// Validate credentials by making a test API call
-	_, err := client.Users.List(ctx, users.ListParams{PageSize: 1})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Create Kinde Client",
@@ -102,8 +89,9 @@ func (p *KindeProvider) Configure(ctx context.Context, req provider.ConfigureReq
 		return
 	}
 
-	resp.DataSourceData = &client
-	resp.ResourceData = &client
+	pd := &providerData{api: client}
+	resp.DataSourceData = pd
+	resp.ResourceData = pd
 }
 
 func (p *KindeProvider) Resources(ctx context.Context) []func() resource.Resource {

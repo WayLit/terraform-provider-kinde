@@ -30,4 +30,4 @@ data "kinde_application" "example" {
 - `client_id` (String) The client ID of the application.
 - `client_secret` (String, Sensitive) The client secret of the application.
 - `name` (String) The name of the application.
-- `type` (String) The type of the application (reg, spa, or m2m).
+- `type` (String) The type of the application (reg, spa, m2m, or device).

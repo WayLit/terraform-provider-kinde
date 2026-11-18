@@ -5,9 +5,8 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"sort"
 	"time"
 
@@ -16,8 +15,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/nxt-fwd/kinde-go"
-	"github.com/nxt-fwd/kinde-go/api/roles"
+	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
+	"github.com/nxt-fwd/terraform-provider-kinde/internal/kindeapi"
 )
 
 var (
@@ -30,19 +29,14 @@ func NewRoleResource() resource.Resource {
 }
 
 type RoleResource struct {
-	client *roles.Client
+	client *kindeapi.Client
 }
 
-type rolePermissionsPage struct {
-	Code        string             `json:"code"`
-	Message     string             `json:"message"`
-	NextToken   string             `json:"next_token"`
-	Permissions []roles.Permission `json:"permissions"`
+// kindeRole is a role as Kinde reports it, with the IDs of its permissions.
+type kindeRole struct {
+	details       mgmt.GetRoleResponseRole
+	permissionIDs []string
 }
-
-func (p rolePermissionsPage) getData() []roles.Permission { return p.Permissions }
-
-func (p rolePermissionsPage) getNextToken() string { return p.NextToken }
 
 func (r *RoleResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_role"
@@ -63,7 +57,7 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Required:            true,
 			},
 			"key": schema.StringAttribute{
-				MarkdownDescription: "Key identifier of the role",
+				MarkdownDescription: "Key identifier of the role. Changing it updates the role in place.",
 				Required:            true,
 			},
 			"description": schema.StringAttribute{
@@ -80,20 +74,11 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 }
 
 func (r *RoleResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	pd := providerDataFrom(req.ProviderData, &resp.Diagnostics)
+	if pd == nil {
 		return
 	}
-
-	client, ok := req.ProviderData.(*kinde.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *kinde.Client, got: %T. Please report this issue to the provider developers.", req.ProviderData),
-		)
-		return
-	}
-
-	r.client = client.Roles
+	r.client = pd.api
 }
 
 func (r *RoleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -105,8 +90,7 @@ func (r *RoleResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 
 	// Create role with basic details first
-	createParams := expandRoleCreateParams(plan)
-	role, err := r.client.Create(ctx, createParams)
+	created, err := r.client.CreateRole(ctx, expandRoleCreateReq(plan))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Role",
@@ -114,9 +98,17 @@ func (r *RoleResource) Create(ctx context.Context, req resource.CreateRequest, r
 		)
 		return
 	}
+	roleID := created.Role.Value.ID.Or("")
+	if roleID == "" {
+		resp.Diagnostics.AddError(
+			"Error Creating Role",
+			"Kinde created the role but did not return its ID.",
+		)
+		return
+	}
 
 	// Get the complete role data
-	role, err = r.getRole(ctx, role.ID)
+	role, err := r.getRole(ctx, roleID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Created Role",
@@ -134,17 +126,17 @@ func (r *RoleResource) Create(ctx context.Context, req resource.CreateRequest, r
 			return
 		}
 
-		role, err = r.reconcileRolePermissions(ctx, role.ID, role.Permissions, planPerms)
+		role, err = r.reconcileRolePermissions(ctx, roleID, role.permissionIDs, planPerms)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Error Setting Role Permissions",
-				fmt.Sprintf("Could not reconcile permissions for role %s: %s", role.ID, err),
+				fmt.Sprintf("Could not reconcile permissions for role %s: %s", roleID, err),
 			)
 			return
 		}
 	}
 
-	state, err := flattenRoleResource(ctx, role, sortPermissions(role.Permissions), plan.Permissions.IsNull())
+	state, err := flattenRoleResource(ctx, role.details, sortPermissions(role.permissionIDs), plan.Permissions.IsNull())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Setting Role State",
@@ -174,6 +166,10 @@ func (r *RoleResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	role, err := r.getRole(ctx, state.ID.ValueString())
+	if errors.Is(err, errRoleNotFound) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Role",
@@ -182,7 +178,7 @@ func (r *RoleResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	state, err = flattenRoleResource(ctx, role, sortPermissions(role.Permissions), state.Permissions.IsNull())
+	state, err = flattenRoleResource(ctx, role.details, sortPermissions(role.permissionIDs), state.Permissions.IsNull())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Setting Role State",
@@ -210,10 +206,9 @@ func (r *RoleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	// First update role details
-	updateParams := expandRoleUpdateParams(plan)
-	_, err := r.client.Update(ctx, plan.ID.ValueString(), updateParams)
-	if err != nil {
+	// First update role details. Kinde requires the name and key, so a
+	// changed key is applied in place.
+	if err := r.client.UpdateRole(ctx, plan.ID.ValueString(), expandRoleUpdateReq(plan)); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Role",
 			fmt.Sprintf("Could not update role ID %s: %s", plan.ID.ValueString(), err),
@@ -242,7 +237,7 @@ func (r *RoleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	if !plan.Permissions.Equal(state.Permissions) {
-		role, err = r.reconcileRolePermissions(ctx, plan.ID.ValueString(), role.Permissions, planPerms)
+		role, err = r.reconcileRolePermissions(ctx, plan.ID.ValueString(), role.permissionIDs, planPerms)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Error Updating Role Permissions",
@@ -252,7 +247,7 @@ func (r *RoleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		}
 	}
 
-	state, err = flattenRoleResource(ctx, role, sortPermissions(role.Permissions), plan.Permissions.IsNull())
+	state, err = flattenRoleResource(ctx, role.details, sortPermissions(role.permissionIDs), plan.Permissions.IsNull())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Setting Role State",
@@ -273,7 +268,8 @@ func (r *RoleResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
-	if err := r.client.Delete(ctx, state.ID.ValueString()); err != nil {
+	err := r.client.DeleteRole(ctx, state.ID.ValueString())
+	if err != nil && !kindeapi.IsNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting Role",
 			fmt.Sprintf("Could not delete role ID %s: %s", state.ID.ValueString(), err),
@@ -293,9 +289,9 @@ func (r *RoleResource) ImportState(ctx context.Context, req resource.ImportState
 	}
 
 	// Sort the role's permissions for consistent ordering
-	sortedPermissions := sortStringSlice(role.Permissions)
+	sortedPermissions := sortStringSlice(role.permissionIDs)
 
-	state, err := flattenRoleResource(ctx, role, sortedPermissions, true)
+	state, err := flattenRoleResource(ctx, role.details, sortedPermissions, true)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Setting Role State",
@@ -304,52 +300,41 @@ func (r *RoleResource) ImportState(ctx context.Context, req resource.ImportState
 		return
 	}
 
-	resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func (r *RoleResource) getRole(ctx context.Context, id string) (*roles.Role, error) {
-	endpoint := fmt.Sprintf("/api/v1/roles/%s", url.PathEscape(id))
-	req, err := r.client.NewRequest(ctx, http.MethodGet, endpoint, nil, nil)
+// getRole reads a role and every page of its permissions.
+// errRoleNotFound marks a 404 from GetRole itself: the role is gone. A 404
+// from the follow-up permissions call is an ordinary error, because dropping
+// state there would make the next apply create a duplicate role.
+var errRoleNotFound = errors.New("role not found")
+
+func (r *RoleResource) getRole(ctx context.Context, id string) (*kindeRole, error) {
+	res, err := r.client.GetRole(ctx, id)
+	if kindeapi.IsNotFound(err) {
+		return nil, fmt.Errorf("%w: %w", errRoleNotFound, err)
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	var response struct {
-		Code    string     `json:"code"`
-		Message string     `json:"message"`
-		Role    roles.Role `json:"role"`
-	}
-	if err := r.client.DoRequest(req, &response); err != nil {
-		return nil, err
+	details, ok := res.Role.Get()
+	if !ok {
+		return nil, fmt.Errorf("kinde GetRole: the response for role %s has no role", id)
 	}
 
-	permissions, err := r.getRolePermissions(ctx, id)
+	permissions, err := r.client.ListRolePermissions(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get role permissions: %w", err)
 	}
-	response.Role.Permissions = permissions
-
-	return &response.Role, nil
-}
-
-func (r *RoleResource) getRolePermissions(ctx context.Context, roleID string) ([]string, error) {
-	endpoint := fmt.Sprintf("/api/v1/roles/%s/permissions", url.PathEscape(roleID))
-	permissions, err := getAllPages[roles.Permission, rolePermissionsPage](ctx, r.client, endpoint, url.Values{
-		"page_size": []string{"10"},
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	permissionIDs := make([]string, 0, len(permissions))
 	for _, permission := range permissions {
-		permissionIDs = append(permissionIDs, permission.ID)
+		permissionIDs = append(permissionIDs, permission.ID.Or(""))
 	}
 
-	return permissionIDs, nil
+	return &kindeRole{details: details, permissionIDs: permissionIDs}, nil
 }
 
-func buildRolePermissionOperations(current, desired []string) []roles.UpdatePermissionItem {
+func buildRolePermissionOperations(current, desired []string) []mgmt.UpdateRolePermissionsReqPermissionsItem {
 	currentSet := make(map[string]struct{}, len(current))
 	for _, permissionID := range current {
 		currentSet[permissionID] = struct{}{}
@@ -360,21 +345,21 @@ func buildRolePermissionOperations(current, desired []string) []roles.UpdatePerm
 		desiredSet[permissionID] = struct{}{}
 	}
 
-	var operations []roles.UpdatePermissionItem
+	var operations []mgmt.UpdateRolePermissionsReqPermissionsItem
 
 	for _, permissionID := range sortPermissions(current) {
 		if _, keep := desiredSet[permissionID]; !keep {
-			operations = append(operations, roles.UpdatePermissionItem{
-				ID:        permissionID,
-				Operation: "delete",
+			operations = append(operations, mgmt.UpdateRolePermissionsReqPermissionsItem{
+				ID:        mgmt.NewOptString(permissionID),
+				Operation: mgmt.NewOptString("delete"),
 			})
 		}
 	}
 
 	for _, permissionID := range sortPermissions(desired) {
 		if _, alreadyPresent := currentSet[permissionID]; !alreadyPresent {
-			operations = append(operations, roles.UpdatePermissionItem{
-				ID: permissionID,
+			operations = append(operations, mgmt.UpdateRolePermissionsReqPermissionsItem{
+				ID: mgmt.NewOptString(permissionID),
 			})
 		}
 	}
@@ -399,10 +384,10 @@ func rolePermissionsMatch(actual, desired []string) bool {
 	return true
 }
 
-func (r *RoleResource) reconcileRolePermissions(ctx context.Context, roleID string, current, desired []string) (*roles.Role, error) {
+func (r *RoleResource) reconcileRolePermissions(ctx context.Context, roleID string, current, desired []string) (*kindeRole, error) {
 	operations := buildRolePermissionOperations(current, desired)
 	if len(operations) > 0 {
-		_, err := r.client.UpdatePermissions(ctx, roleID, roles.UpdatePermissionsParams{
+		err := r.client.UpdateRolePermissions(ctx, roleID, mgmt.UpdateRolePermissionsReq{
 			Permissions: operations,
 		})
 		if err != nil {
@@ -413,21 +398,21 @@ func (r *RoleResource) reconcileRolePermissions(ctx context.Context, roleID stri
 	return r.waitForRolePermissions(ctx, roleID, desired)
 }
 
-func (r *RoleResource) waitForRolePermissions(ctx context.Context, roleID string, desired []string) (*roles.Role, error) {
+func (r *RoleResource) waitForRolePermissions(ctx context.Context, roleID string, desired []string) (*kindeRole, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	var lastRole *roles.Role
+	var lastRole *kindeRole
 	var lastErr error
 
 	for {
 		role, err := r.getRole(waitCtx, roleID)
 		if err == nil {
 			lastRole = role
-			if rolePermissionsMatch(role.Permissions, desired) {
+			if rolePermissionsMatch(role.permissionIDs, desired) {
 				return role, nil
 			}
 		} else {
@@ -441,7 +426,7 @@ func (r *RoleResource) waitForRolePermissions(ctx context.Context, roleID string
 					"timed out waiting for role permissions to converge for role %s: desired=%v observed=%v",
 					roleID,
 					sortPermissions(desired),
-					sortPermissions(lastRole.Permissions),
+					sortPermissions(lastRole.permissionIDs),
 				)
 			}
 			if lastErr != nil {
