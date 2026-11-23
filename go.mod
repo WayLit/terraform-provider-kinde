@@ -11,7 +11,7 @@ require (
 	github.com/hashicorp/terraform-plugin-log v0.11.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/kinde-oss/kinde-go v0.3.0
-	github.com/nyaruka/phonenumbers v1.8.1
+	github.com/nyaruka/phonenumbers/v2 v2.0.17
 	github.com/ogen-go/ogen v1.25.0
 	golang.org/x/oauth2 v0.38.0
 )

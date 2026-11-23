@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	mgmt "github.com/kinde-oss/kinde-go/kinde/management_api"
-	"github.com/nyaruka/phonenumbers"
+	"github.com/nyaruka/phonenumbers/v2"
 )
 
 // identitiesPageSize is how many identities one page of

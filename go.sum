@@ -146,8 +146,8 @@ github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyua
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/reflectwalk v1.0.2 h1:G2LzWKi524PWgd3mLHV8Y5k7s6XUvT0Gef6zxSIeXaQ=
 github.com/mitchellh/reflectwalk v1.0.2/go.mod h1:mSTlrgnPZtwu0c4WaC2kGObEpuNDbx0jmZXqmk4esnw=
-github.com/nyaruka/phonenumbers v1.8.1 h1:2K9YMQuv1dCGqjjzB1DwmdCe89khT4KPBQb2CxAMMlU=
-github.com/nyaruka/phonenumbers v1.8.1/go.mod h1:fsKPJ70O9JetEA4ggnJadYTFWwtGPvu/lETTXNXq6Cs=
+github.com/nyaruka/phonenumbers/v2 v2.0.17 h1:cHksDS+Iif/0mVwqhnFsEPnGPVXujowFdv+uXAXSv34=
+github.com/nyaruka/phonenumbers/v2 v2.0.17/go.mod h1:ch3CB5vKpdcQXyRLWm+ELlEdiUwagKR6pYvXgVXRiN0=
 github.com/ogen-go/ogen v1.25.0 h1:YKTNX0pP3x4ppHCEqMXJc4I4+6M0XMormmAr0dXHbDU=
 github.com/ogen-go/ogen v1.25.0/go.mod h1:2+RzIS/6/fcqMIqDZuEv2Cwg5ptfu5BhyU/TiRdS4No=
 github.com/oklog/run v1.2.0 h1:O8x3yXwah4A73hJdlrwo/2X6J62gE5qTMusH0dvz60E=
