@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nyaruka/phonenumbers"
+	"github.com/nyaruka/phonenumbers/v2"
 )
 
 // parsePhone splits a phone number in international format, such as
