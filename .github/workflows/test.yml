@@ -85,7 +85,7 @@ jobs:
       # renovate: datasource=github-releases depName=hashicorp/terraform
       TERRAFORM_VERSION: 1.17.2
       # renovate: datasource=github-releases depName=opentofu/opentofu
-      TOFU_VERSION: 1.13.1
+      TOFU_VERSION: 1.13.9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
